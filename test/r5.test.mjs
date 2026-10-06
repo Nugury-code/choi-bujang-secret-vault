@@ -25,7 +25,6 @@ test('build identity uses Vercel Git and deployment metadata', () => {
     commit: 'a'.repeat(40),
     publicAppUrl: 'https://student-defense-123.vercel.app',
     judgeIssuer: config.judgeIssuer,
-    sampleMarker: config.sampleMarker,
   });
   assert.throws(() => deploymentIdentity({ ...env, VERCEL_GIT_PROVIDER: undefined }, config));
   assert.throws(() => deploymentIdentity({ ...env, VERCEL_GIT_COMMIT_SHA: 'short' }, config));

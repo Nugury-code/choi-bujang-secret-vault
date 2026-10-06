@@ -25,6 +25,5 @@ export function deploymentIdentity(env, config) {
     commit: commit.toLowerCase(),
     publicAppUrl: `https://${host.toLowerCase()}`,
     judgeIssuer: config.judgeIssuer,
-    sampleMarker: config.sampleMarker,
   };
 }

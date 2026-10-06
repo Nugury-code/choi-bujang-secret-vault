@@ -6,16 +6,26 @@ const root = resolve(import.meta.dirname, '..');
 const source = resolve(root, 'data.json');
 const output = resolve(root, 'public', 'data.json');
 const config = JSON.parse(await readFile(resolve(root, 'aleph.config.json'), 'utf8'));
-if (config.step !== 1) {
-  throw new Error('1단계 이후에는 공개 data.json 복사를 끝내고 보호된 자료 API로 바꾸세요.');
-}
-const data = JSON.parse(await readFile(source, 'utf8'));
-if (!Array.isArray(data.notes)) {
-  throw new Error('실습용 공개 자료 형식을 확인하세요. 실제 학생 자료를 넣으면 안 됩니다.');
+if (!Number.isInteger(config.step) || config.step < 1 || config.step > 12) {
+  throw new Error('aleph.config.json의 step을 확인해 주세요.');
 }
 await mkdir(resolve(root, 'public'), { recursive: true });
-await copyFile(source, output);
-console.log('실습용 공개 자료를 public/data.json에 복사했습니다.');
+if (config.step === 1) {
+  const data = JSON.parse(await readFile(source, 'utf8'));
+  if (!Array.isArray(data.notes)) {
+    throw new Error('실습용 공개 자료 형식을 확인하세요. 실제 학생 자료를 넣으면 안 됩니다.');
+  }
+  await copyFile(source, output);
+  console.log('실습용 공개 자료를 public/data.json에 복사했습니다.');
+} else {
+  // 2단계부터 자료는 서버 함수(api/notes.js)가 DB에서 읽습니다. 공개 data.json은 복사하지 않고
+  // 저장소에 있는 비어 있는 public/data.json을 그대로 둡니다.
+  const published = JSON.parse(await readFile(output, 'utf8'));
+  if (!Array.isArray(published.notes) || published.notes.length > 0 || 'sampleMarker' in published) {
+    throw new Error('public/data.json에는 메모와 확인 표시가 없어야 합니다.');
+  }
+  console.log('2단계 이후라 data.json을 복사하지 않았습니다. public/data.json은 비어 있습니다.');
+}
 if (!process.argv.includes('--local')) {
   const identity = deploymentIdentity(process.env, config);
   await writeFile(resolve(root, 'public', 'aleph.json'),

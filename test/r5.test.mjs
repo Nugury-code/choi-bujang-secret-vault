@@ -31,6 +31,12 @@ test('build identity uses Vercel Git and deployment metadata', () => {
   assert.throws(() => deploymentIdentity({ ...env, VERCEL_GIT_COMMIT_SHA: 'short' }, config));
 });
 
+test('build identity records the step from the config', () => {
+  assert.equal(deploymentIdentity(env, { ...config, step: 2 }).step, 2);
+  assert.throws(() => deploymentIdentity(env, { ...config, step: 0 }));
+  assert.throws(() => deploymentIdentity(env, { ...config, step: 13 }));
+});
+
 test('first attack check reads public data.json without credentials', async () => {
   const originalFetch = globalThis.fetch;
   let requestUrl;

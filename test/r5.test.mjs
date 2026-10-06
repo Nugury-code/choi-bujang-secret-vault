@@ -61,3 +61,29 @@ test('first attack check reads public data.json without credentials', async () =
     globalThis.fetch = originalFetch;
   }
 });
+
+test('step 2 attack check records the static file and the anonymous API without note text', async () => {
+  const originalFetch = globalThis.fetch;
+  const urls = [];
+  try {
+    globalThis.fetch = async (url) => {
+      urls.push(String(url));
+      if (String(url).endsWith('/data.json')) return new Response(JSON.stringify({ notes: [] }), { status: 200 });
+      return new Response(JSON.stringify({ notes: [{ title: 'SECRET_TITLE', content: 'SECRET_BODY' }] }), { status: 200 });
+    };
+    const results = await runAttackChecks({ ...config, step: 2 });
+    assert.deepEqual(urls, ['https://student-defense.vercel.app/data.json', 'https://student-defense.vercel.app/api/notes']);
+    assert.deepEqual(results.map(item => Object.keys(item).sort()), [['attackId', 'expected', 'observed'], ['attackId', 'expected', 'observed']]);
+    assert.match(results[0].observed, /메모 0건, 확인 표시 없음/u);
+    assert.match(results[1].observed, /메모 1건/u);
+    assert.ok(!JSON.stringify(results).includes('SECRET_'));
+    globalThis.fetch = async () => new Response(JSON.stringify({ sampleMarker: 'SAMPLE_NOTE_1', notes: [] }), { status: 200 });
+    const [leaked] = await runAttackChecks({ ...config, step: 2 });
+    assert.match(leaked.observed, /확인 표시가 보임/u);
+    globalThis.fetch = async () => { throw new Error('network'); };
+    const [failed] = await runAttackChecks({ ...config, step: 2 });
+    assert.match(failed.observed, /확인하지 못함/u);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

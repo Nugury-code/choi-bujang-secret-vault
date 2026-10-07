@@ -1,0 +1,19 @@
+2026-10-07T08:29:41.034Z action=block alert=bf-01 srcip=203.0.113.10 confidence=0.95 expires=2026-10-07T08:59:41.034Z reason=근거 패턴: 짧은 시간 같은 주소의 로그인 실패 연속
+2026-10-07T08:29:41.034Z action=block alert=bf-02 srcip=203.0.113.10 confidence=0.95 expires=2026-10-07T08:59:41.034Z reason=근거 패턴: 여러 계정에 같은 비밀번호 대입
+2026-10-07T08:29:41.034Z action=block alert=bf-03 srcip=198.51.100.20 confidence=0.95 expires=2026-10-07T08:59:41.034Z reason=근거 패턴: 짧은 시간 같은 주소의 로그인 실패 연속
+2026-10-07T08:29:41.034Z action=block alert=bf-04 srcip=192.0.2.30 confidence=0.95 expires=2026-10-07T08:59:41.034Z reason=근거 패턴: 짧은 시간 같은 주소의 로그인 실패 연속
+2026-10-07T08:29:41.034Z action=block alert=bf-05 srcip=203.0.113.21 confidence=0.95 expires=2026-10-07T08:59:41.034Z reason=근거 패턴: 여러 계정에 같은 비밀번호 대입
+2026-10-07T08:29:41.034Z action=block alert=bf-06 srcip=198.51.100.44 confidence=0.95 expires=2026-10-07T08:59:41.034Z reason=근거 패턴: 짧은 시간 같은 주소의 로그인 실패 연속
+2026-10-07T08:29:41.034Z action=block alert=bf-07 srcip=203.0.113.15 confidence=0.95 expires=2026-10-07T08:59:41.034Z reason=근거 패턴: 짧은 시간 같은 주소의 로그인 실패 연속
+2026-10-07T08:29:41.034Z action=block alert=bf-08 srcip=192.0.2.18 confidence=0.95 expires=2026-10-07T08:59:41.034Z reason=근거 패턴: 짧은 시간 같은 주소의 로그인 실패 연속
+2026-10-07T08:29:41.034Z action=block alert=bf-09 srcip=198.51.100.8 confidence=0.95 expires=2026-10-07T08:59:41.034Z reason=근거 패턴: 여러 계정에 같은 비밀번호 대입
+2026-10-07T08:29:41.034Z action=block alert=bf-10 srcip=203.0.113.40 confidence=0.95 expires=2026-10-07T08:59:41.034Z reason=근거 패턴: 짧은 시간 같은 주소의 로그인 실패 연속
+2026-10-07T08:29:41.034Z action=alert alert=bf-11 srcip=192.0.2.50 confidence=0.55 rule=none reason=근거 패턴: 짧은 시간 같은 주소의 로그인 실패 연속
+2026-10-07T08:29:41.034Z action=alert alert=bf-12 srcip=198.51.100.50 confidence=0.55 rule=none reason=근거 패턴: 짧은 시간 같은 주소의 로그인 실패 연속
+2026-10-07T08:29:41.034Z action=alert alert=bf-13 srcip=203.0.113.50 confidence=0.55 rule=none reason=근거 패턴: 짧은 시간 같은 주소의 로그인 실패 연속
+2026-10-07T08:29:41.034Z action=alert alert=bf-14 srcip=192.0.2.51 confidence=0.55 rule=none reason=근거 패턴: 짧은 시간 같은 주소의 로그인 실패 연속
+2026-10-07T08:29:41.034Z action=alert alert=bf-15 srcip=198.51.100.51 confidence=0.55 rule=none reason=근거 패턴: 짧은 시간 같은 주소의 로그인 실패 연속
+2026-10-07T08:29:41.034Z action=alert alert=bf-16 srcip=203.0.113.51 confidence=0.55 rule=none reason=근거 패턴: 짧은 시간 같은 주소의 로그인 실패 연속
+2026-10-07T08:29:41.034Z action=alert alert=bf-17 srcip=192.0.2.52 confidence=0.55 rule=none reason=근거 패턴: 짧은 시간 같은 주소의 로그인 실패 연속
+2026-10-07T08:29:41.034Z action=alert alert=bf-18 srcip=198.51.100.52 confidence=0.55 rule=none reason=근거 패턴: 짧은 시간 같은 주소의 로그인 실패 연속
+2026-10-07T08:29:41.034Z action=alert alert=bf-19 srcip=203.0.113.52 confidence=0.55 rule=none reason=근거 패턴: 짧은 시간 같은 주소의 로그인 실패 연속

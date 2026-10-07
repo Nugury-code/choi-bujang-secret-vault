@@ -24,9 +24,9 @@
 
 서버 함수는 Vercel 프로젝트의 환경변수 `SUPABASE_URL`과 서버 전용 `SUPABASE_SECRET_KEY`를 읽습니다. 두 값은 코드, README, Git, 화면에 적지 않고 Vercel 설정 화면의 비밀 입력란에 직접 넣습니다. 서버 전용 키는 브라우저 파일, 응답, 로그에 나가지 않습니다. 테이블은 행 수준 보안(RLS)을 켜 두었고 `anon`·`authenticated`에는 읽기 권한을 주지 않았습니다.
 
-**아직 남은 약점:** `/api/notes`는 공개 주소이고 아직 로그인이 없습니다. 누구나 이 주소를 부르면 같은 메모를 받을 수 있습니다. 3단계에서 로그인을 붙이기 전까지는 이 DB에 가상 메모만 둡니다. 옛 커밋과 옛 배포에는 이전의 공개 메모가 남아 있을 수 있어서, 이번 변경만으로 과거 노출이 해소됐다고 볼 수 없습니다.
+**2단계 당시의 약점(3단계에서 토큰 검사로 막음):** `/api/notes`는 공개 주소이고 로그인이 없어서 누구나 이 주소를 부르면 같은 메모를 받을 수 있었습니다. 지금은 아래 3단계 절처럼 토큰 없이 부르면 401입니다. 그래도 이 DB에는 가상 메모만 둡니다. 옛 커밋과 옛 배포에는 이전의 공개 메모가 남아 있을 수 있어서, 이번 변경만으로 과거 노출이 해소됐다고 볼 수 없습니다.
 
-**지금 작동하는 기능:** 화면의 카드 네 개는 `/api/notes`에서 오고, 공개 `/data.json`은 `"notes": []`뿐이며, `aleph.config.json`의 `step`은 2입니다. 2단계부터 `npm run build`는 `data.json`을 `public`으로 복사하지 않고 비어 있는 `public/data.json`만 검사합니다.
+**지금 작동하는 기능:** 화면의 카드 네 개는 `/api/notes`에서 오고, 공개 `/data.json`은 `"notes": []`뿐이며, `aleph.config.json`의 `step`은 2단계 당시 2였고, 지금은 3입니다. 2단계부터 `npm run build`는 `data.json`을 `public`으로 복사하지 않고 비어 있는 `public/data.json`만 검사합니다.
 
 **다시 실행하는 방법:**
 
@@ -101,7 +101,7 @@
 - 메모 주인은 서버가 토큰에서 확인한 사용자 ID이며, 추가할 때 `owner_id`로 저장합니다. 브라우저가 보낸 `owner_id`·`userId`·`role`은 읽지 않고 무시합니다.
 - 목록에는 내가 추가한 메모와 주인이 없는 처음 가상 메모(`owner_id`가 비어 있음)가 나옵니다. 다른 사람이 추가한 메모는 목록에서 뺍니다.
 - 허용 경로는 `aleph.config.json`의 `allowedRoutes`에 `METHOD /경로` 모양으로 적었습니다.
-- 데이터 준비: 메모마다 바깥에서 쓰는 UUID가 필요해 표에 `note_id` 칸을 더합니다. Supabase SQL Editor에서 `supabase/002_note_id.sql`을 실행하고(여러 번 실행해도 안전, 기존 메모 보존), 맨 아래 확인 결과에서 `note_id_type`이 `uuid`, `notes`와 `distinct_note_ids`가 같고 `rls_on`이 `true`인지 봅니다. 코드를 올리기 전에 실행해야 합니다.
+- 데이터 준비: 메모마다 바깥에서 쓰는 UUID가 필요해 표에 `note_id` 칸을 더합니다. Supabase SQL Editor에서 `supabase/002_note_id.sql`을 실행하고(여러 번 실행해도 안전, 기존 메모 보존), 맨 아래 확인 결과에서 `note_id_type`이 `uuid`, `notes`와 `distinct_note_ids`가 같고 `rls_on`이 `true`인지 봅니다. 서버 전용 역할에 추가·수정·삭제 권한을 주는 한 줄도 들어 있고, 확인 결과에서 `server_can_*`는 `true`, `anon_can_select`와 `authenticated_can_select`는 `false`여야 합니다. 코드를 올리기 전에 실행해야 합니다.
 - 시험: `npm run test:notes`(가짜 DB로 추가·조회·수정·삭제, 401·400·404·405·409·502, 위조·만료 토큰, 브라우저가 보낸 값 무시), `npm run test:auth`.
 
 **아직 막지 못한 허점(4단계에서 고칩니다):** 서버가 메모의 주인을 검사하지 않습니다. 로그인한 B가 A 메모의 `id`(UUID)를 알면 `GET`·`PUT`·`DELETE`로 읽고, 고치고, 지울 수 있습니다. 목록에서 남의 메모를 빼는 것은 화면 편의일 뿐 접근 통제가 아닙니다. 그 밖에 요청 횟수 제한이 없고, Supabase 공개 가입 설정은 점검하지 않았습니다.
@@ -117,9 +117,30 @@
 
 **주의:** `index.html`의 `<style>` 안쪽을 한 글자라도 바꾸면 스타일이 적용되지 않으므로, 고친 뒤에는 해시를 다시 계산해 `vercel.json`에 맞춥니다(`npm run test:auth`가 어긋남을 알려 줍니다). 스크립트는 `public/app.js` 파일이라 고쳐도 해시가 필요 없습니다. 화면이 이상하면 `vercel.json`을 직전 커밋으로 되돌립니다.
 
+### 3단계 저장점: 지금 작동하는 기능과 다시 실행하는 방법
+
+**지금 작동하는 기능** (실제 배포 주소에서 확인한 것은 괄호에 적었습니다)
+
+- 이메일·비밀번호 로그인과 로그아웃 화면(Supabase Auth 공식 SDK). 로그아웃하면 목록과 메모 추가 칸이 숨겨집니다.
+- 서버가 모든 자료 요청의 로그인 토큰을 `src/verify-login.mjs`로 검사합니다. 토큰이 없거나 위조·만료·다른 서비스용이면 자료 없이 `401`입니다(토큰 없이 `GET /api/notes`, `GET /api/notes/:id`, `POST /api/notes` 모두 401 확인).
+- 로그인한 A가 메모를 추가·수정·삭제하고, 지운 뒤 한 건 조회는 `404`입니다(A 계정으로 화면에서 확인). 추가한 메모의 주인(`owner_id`)은 서버가 확인한 사용자 ID입니다.
+- 처음 가상 메모 4건은 DB에 그대로 있고, 공개 `/data.json`은 `"notes": []`입니다. 보안 응답 헤더 네 개가 붙어 있습니다.
+- `aleph.config.json`: `step` 3, `identityProvider`(발급자·대상·공개키 주소, 비밀 없음), `allowedRoutes`(`GET`·`POST /api/notes`, `GET`·`PUT`·`DELETE /api/notes/:id`).
+
+**다시 실행하는 방법**
+
+1. `npm install`을 한 번 실행합니다.
+2. 시험: `npm run test:r5`, `npm run test:package`, `npm run test:notes`, `npm run test:auth`. 모두 통과해야 합니다.
+3. DB: Supabase SQL Editor에서 `supabase/vault_notes.sql`(표 구조와 권한)과 `supabase/002_note_id.sql`(메모 UUID 칸과 서버 쓰기 권한)을 순서대로 실행합니다. 둘 다 여러 번 실행해도 안전하며, 가상 메모 자료는 저장소에 두지 않습니다.
+4. Vercel 환경변수 `SUPABASE_URL`, `SUPABASE_SECRET_KEY`는 Vercel 설정의 비밀 입력란에만 넣습니다. 그 뒤 `git push`로 배포합니다.
+5. 제출 묶음: 모든 변경을 커밋한 뒤 `npm run bundle`을 실행합니다(`bundle-notes.json`은 커밋하지 않고, `artifacts/submission.json`도 커밋하지 않습니다). 직접 점검(`src/attack-check.mjs`)이 배포 주소에 로그인 없이 보낼 수 있는 요청만 실제로 보내고 결과 상태 코드를 적습니다: 공개 `/data.json`, 토큰 없는 목록 읽기·메모 추가·수정·삭제, 위조·만료 모양·다른 서비스용 모양의 가짜 토큰.
+6. 직접 점검이 보내지 않는 것(미실행): 정상 A 로그인 뒤 요청과, 진짜로 서명된 만료 토큰·다른 서비스용 토큰은 로그인 정보가 필요해 이 점검에서 보내지 않습니다. 이 항목은 `npm run test:notes`의 가짜 서명 키 시험으로만 확인했습니다.
+
+**아직 막지 못한 것(4단계 이후):** 소유자 검사가 없어서 로그인한 B가 A 메모의 `id`를 알면 읽고·고치고·지울 수 있습니다. 요청 횟수 제한이 없고, Supabase 공개 가입 설정은 점검하지 않았습니다. `src/decider.mjs`의 `RULE_IDS`는 시작 틀의 `starter.deny` 하나(모든 요청을 거부하는 기본 규칙)뿐이며 이 단계에서 새 규칙을 만들지 않았습니다.
+
 ### 이번 단계 변경 때문에 동작이 깨졌을 때 되돌리는 방법
 
-마지막으로 정상 동작을 확인한 커밋은 `e277619`(화면에 카드 4개가 나오고, `/data.json`이 비어 있고, 보안 헤더 네 개가 붙음)입니다. 깨졌다면 아래 순서로 되돌립니다. `git reset --hard`는 쓰지 않습니다.
+마지막으로 정상 동작을 확인한 커밋은 `ae82841`(A 계정 로그인 뒤 메모 추가·수정·삭제가 되고, 로그인 없는 요청은 401, `/data.json`은 비어 있고, 보안 헤더 네 개가 붙음)입니다. 그보다 앞서 화면과 헤더만 확인한 커밋은 `e277619`입니다. 깨졌다면 아래 순서로 되돌립니다. `git reset --hard`는 쓰지 않습니다.
 
 1. `git status`와 `git diff`로 이번 단계 변경과 다른 변경을 먼저 구분합니다.
 2. 문제를 만든 커밋만 `git revert <커밋>`으로 되돌립니다. 기록을 지우지 않고 되돌리는 새 커밋이 생깁니다.

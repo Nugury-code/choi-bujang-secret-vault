@@ -17,5 +17,8 @@ alter table public.vault_notes enable row level security;
 revoke all on table public.vault_notes from anon, authenticated;
 revoke all on sequence public.vault_notes_id_seq from anon, authenticated;
 
--- 서버 함수(api/notes.js)가 쓰는 서버 전용 역할만 읽을 수 있습니다.
-grant select on table public.vault_notes to service_role;
+-- 서버 함수(api/notes.js, api/notes/[id].js)가 쓰는 서버 전용 역할만 읽고 쓸 수 있습니다.
+-- (3단계 제작 3에서 추가·수정·삭제를 붙이면서 insert, update, delete 권한을 더했습니다.)
+grant select, insert, update, delete on table public.vault_notes to service_role;
+
+-- 메모마다 바깥에서 쓰는 UUID(note_id) 칸은 supabase/002_note_id.sql로 더합니다.

@@ -98,3 +98,49 @@ test('step 2 attack check records the static file and the anonymous API without 
     globalThis.fetch = originalFetch;
   }
 });
+
+test('step 3 attack check sends only requests that need no login and records status codes, never tokens or note text', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  const step3 = {
+    ...config,
+    step: 3,
+    identityProvider: {
+      issuer: 'https://project.supabase.co/auth/v1', audience: 'authenticated',
+      jwksUrl: 'https://project.supabase.co/auth/v1/.well-known/jwks.json',
+    },
+  };
+  try {
+    globalThis.fetch = async (url, init = {}) => {
+      calls.push({ url: String(url), method: init.method ?? 'GET', auth: init.headers?.Authorization ?? null });
+      if (String(url).endsWith('/data.json')) return new Response(JSON.stringify({ notes: [] }), { status: 200 });
+      return new Response(JSON.stringify({ error: 'UNAUTHORIZED' }), { status: 401 });
+    };
+    const results = await runAttackChecks(step3);
+    assert.equal(results.length, 8);
+    assert.deepEqual(results.map(item => Object.keys(item).sort()).filter(keys => keys.join() !== 'attackId,expected,observed'), []);
+    assert.deepEqual(results.map(item => item.attackId), ['static_data_has_no_notes', 'anonymous_note_read', 'anonymous_note_create',
+      'anonymous_note_update', 'anonymous_note_delete', 'forged_token_read', 'expired_token_read', 'other_service_token_read']);
+    for (const item of results.slice(1)) assert.match(item.observed, /자료 없이 거절됨 \(HTTP 401\)/u);
+    assert.deepEqual(calls.map(call => call.method), ['GET', 'GET', 'POST', 'PUT', 'DELETE', 'GET', 'GET', 'GET']);
+    assert.deepEqual(calls.map(call => Boolean(call.auth)), [false, false, false, false, false, true, true, true]);
+    assert.ok(calls.slice(1).every(call => call.url.startsWith('https://student-defense.vercel.app/api/notes')));
+    const text = JSON.stringify(results);
+    assert.ok(!/Bearer|eyJ|sb_secret_|@/u.test(text));
+    for (const call of calls.filter(item => item.auth)) assert.ok(!text.includes(call.auth.slice(7)));
+
+    globalThis.fetch = async (url) => (String(url).endsWith('/data.json')
+      ? new Response(JSON.stringify({ notes: [] }), { status: 200 })
+      : new Response(JSON.stringify([{ id: 'x', title: 'SECRET_TITLE', body: 'SECRET_BODY' }]), { status: 200 }));
+    const open = await runAttackChecks(step3);
+    assert.match(open[1].observed, /막히지 않고 성공함 \(HTTP 200\)/u);
+    assert.match(open[6].observed, /진짜 서명된 만료 토큰은 미실행/u);
+    assert.ok(!JSON.stringify(open).includes('SECRET_'));
+
+    globalThis.fetch = async () => { throw new Error('network'); };
+    const failed = await runAttackChecks(step3);
+    assert.match(failed[2].observed, /확인하지 못함/u);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

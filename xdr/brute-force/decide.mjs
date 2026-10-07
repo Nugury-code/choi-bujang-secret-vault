@@ -13,8 +13,8 @@ const JEV_TIMEOUT_MS = 3000;
 
 // 명확한 공격의 기준: 규칙 수준이 10 이상(높음)이고, 로그인 실패나 여러 계정 대입의 증거가 함께 있어야 block 합니다.
 const CLEAR_LEVEL = 10;
-// 규칙 수준과 상관없이 로그인 실패가 8건 이상이거나 계정이 5개 이상이면 block 합니다(Wazuh 규칙 5712: 같은 주소에서 120초 안에 8번 실패 = 무차별 대입).
-const HEAVY_FAILURES = 8;
+// 규칙 수준과 상관없이 로그인 실패가 3건 이상이거나 계정이 5개 이상이면 block 후보로 크게 늘립니다.
+const HEAVY_FAILURES = 3;
 const HEAVY_ACCOUNTS = 5;
 const CLEAR_CONFIDENCE = 0.95;
 // 정상으로 바로 넘기는 기준: 맞는 패턴이 없고 경보 수준이 낮을 때.

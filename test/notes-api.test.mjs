@@ -48,13 +48,6 @@ function makeFakeDb(rows, state) {
     update(values) { this.op = 'update'; this.values = values; return this; }
     delete() { this.op = 'delete'; return this; }
     eq(column, value) { this.filters.push((row) => row[column] === value); return this; }
-    or(text) {
-      const [mine, none] = text.split(',');
-      const owner = mine.replace('owner_id.eq.', '');
-      assert.equal(none, 'owner_id.is.null');
-      this.filters.push((row) => row.owner_id === owner || row.owner_id === null);
-      return this;
-    }
     order() { return this; }
     maybeSingle() { this.single = true; return this; }
     then(resolve, reject) { return Promise.resolve(this.run()).then(resolve, reject); }
@@ -62,7 +55,7 @@ function makeFakeDb(rows, state) {
       state.calls += 1;
       if (state.failCode) return { data: null, error: { code: state.failCode, message: `secret ${FAKE_KEY}` } };
       const matched = rows.filter((row) => this.filters.every((fn) => fn(row)));
-      const pick = (list) => list.map(({ note_id, title, content }) => ({ note_id, title, content }));
+      const pick = (list) => list.map(({ note_id, title, content, owner_id }) => ({ note_id, title, content, owner_id }));
       const out = (list) => ({ data: this.single ? (pick(list)[0] ?? null) : pick(list), error: null });
       if (this.op === 'insert') {
         if (rows.some((row) => row.note_id === this.values.note_id)) return { data: null, error: { code: '23505' } };
@@ -87,18 +80,25 @@ let rows;
 let state;
 let service;
 
-function call(handlerName, { method = 'GET', headers = {}, url, query, body } = {}) {
+function call(handlerName, { method = 'GET', headers = {}, url, query, body } = {}, target = service) {
   const out = { headers: new Map() };
   const response = {
     setHeader: (key, value) => out.headers.set(key.toLowerCase(), value),
     status: (code) => { out.status = code; return { json: (b) => { out.body = b; } }; },
   };
-  return service[handlerName]({ method, headers, url, query, body }, response).then(() => out);
+  return target[handlerName]({ method, headers, url, query, body }, response).then(() => out);
 }
 const asA = { authorization: `Bearer ${TOKEN_A}` };
 const asB = { authorization: `Bearer ${TOKEN_B}` };
 const list = (headers = asA) => call('handleCollection', { headers, url: '/api/notes' });
-const item = (id, method = 'GET', extra = {}) => call('handleItem', { method, url: `/api/notes/${id}`, headers: asA, ...extra });
+const create = (headers, body) => call('handleCollection', { method: 'POST', headers, url: '/api/notes', body });
+const item = (id, method = 'GET', headers = asA, extra = {}) => call('handleItem', { method, url: `/api/notes/${id}`, headers, ...extra });
+const rowOf = (id) => rows.find((row) => row.note_id === id);
+
+const A_NOTE = '11111111-1111-4111-8111-111111111111';
+const A_NOTE_2 = '22222222-2222-4222-8222-222222222222';
+const B_NOTE = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const LEGACY = '99999999-9999-4999-8999-999999999999';
 
 beforeEach(() => {
   process.env.SUPABASE_URL = 'https://example-project.supabase.test';
@@ -106,9 +106,10 @@ beforeEach(() => {
   logged = [];
   console.error = (...args) => logged.push(args.join(' '));
   rows = [
-    { note_id: SEED_1, owner_id: null, title: '처음 메모 1', content: '처음 내용 1' },
-    { note_id: SEED_2, owner_id: null, title: '처음 메모 2', content: '처음 내용 2' },
-    { note_id: '33333333-3333-4333-8333-333333333333', owner_id: USER_B, title: 'B의 메모', content: 'B 내용' },
+    { note_id: A_NOTE, owner_id: USER_A, title: 'A 메모 1', content: 'A 내용 1' },
+    { note_id: A_NOTE_2, owner_id: USER_A, title: 'A 메모 2', content: 'A 내용 2' },
+    { note_id: B_NOTE, owner_id: USER_B, title: 'B 메모', content: 'B 내용' },
+    { note_id: LEGACY, owner_id: null, title: '주인 없는 메모', content: '주인 없는 내용' },
   ];
   state = { calls: 0, failCode: null };
   service = createNotesService({
@@ -124,54 +125,144 @@ afterEach(() => {
   delete process.env.SUPABASE_SECRET_KEY;
 });
 
-test('목록 GET: 로그인 사용자의 메모와 처음 메모를 {id,title,body} 배열로 주고 남의 메모는 뺀다', async () => {
-  const result = await list();
-  assert.equal(result.status, 200);
-  assert.equal(result.headers.get('cache-control'), 'no-store');
-  assert.deepEqual(result.body, [
-    { id: SEED_1, title: '처음 메모 1', body: '처음 내용 1' },
-    { id: SEED_2, title: '처음 메모 2', body: '처음 내용 2' },
+test('목록 GET: 각자 자기 메모만 {id,title,body}로 받고 남의 메모·주인 없는 메모는 빠진다', async () => {
+  const forA = await list(asA);
+  assert.equal(forA.status, 200);
+  assert.equal(forA.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(forA.body, [
+    { id: A_NOTE, title: 'A 메모 1', body: 'A 내용 1' },
+    { id: A_NOTE_2, title: 'A 메모 2', body: 'A 내용 2' },
   ]);
   const forB = await list(asB);
-  assert.deepEqual(forB.body.map((n) => n.title), ['처음 메모 1', '처음 메모 2', 'B의 메모']);
-  for (const secret of [FAKE_KEY, TOKEN_A]) assert.ok(!JSON.stringify(result.body).includes(secret));
+  assert.deepEqual(forB.body, [{ id: B_NOTE, title: 'B 메모', body: 'B 내용' }]);
+  for (const result of [forA, forB]) {
+    assert.ok(!JSON.stringify(result.body).includes('owner'));
+    assert.ok(!JSON.stringify(result.body).includes('주인 없는'));
+  }
 });
 
-test('추가·한 건 조회·수정·삭제·삭제 뒤 404: A의 전체 흐름', async () => {
-  const id = '9f6b1f4e-2f0f-4f55-9f6d-0a5f2b6c7d88';
-  const created = await call('handleCollection', { method: 'POST', headers: asA, url: '/api/notes', body: { id, title: '  새 메모  ', body: '새 내용' } });
-  assert.equal(created.status, 201);
-  assert.deepEqual(created.body, { id });
-  assert.equal(rows.at(-1).owner_id, USER_A, '서버가 확인한 사용자 ID가 owner_id로 저장되어야 한다');
-  assert.equal(rows.at(-1).title, '새 메모');
-
-  const one = await item(id);
-  assert.equal(one.status, 200);
-  assert.deepEqual(one.body, { id, title: '새 메모', body: '새 내용' });
-  assert.ok((await list()).body.some((n) => n.id === id));
-
-  const edited = await item(id, 'PUT', { body: { title: '고친 제목', body: '고친 내용' } });
-  assert.equal(edited.status, 200);
-  assert.deepEqual(edited.body, { id, title: '고친 제목', body: '고친 내용' });
-  assert.deepEqual((await item(id)).body, { id, title: '고친 제목', body: '고친 내용' });
-
-  const removed = await item(id, 'DELETE');
-  assert.equal(removed.status, 200);
-  assert.deepEqual(removed.body, { id });
-  const gone = await item(id);
-  assert.equal(gone.status, 404);
-  assert.equal((await item(id, 'DELETE')).status, 404);
-  assert.equal((await item(id, 'PUT', { body: { title: 'x', body: 'y' } })).status, 404);
-  assert.ok(!(await list()).body.some((n) => n.id === id));
+test('A와 B는 각자 자기 메모의 추가·조회·수정·삭제를 그대로 할 수 있다', async () => {
+  for (const [headers, userId] of [[asA, USER_A], [asB, USER_B]]) {
+    const id = crypto.randomUUID();
+    const created = await create(headers, { id, title: '  새 메모  ', body: '새 내용' });
+    assert.equal(created.status, 201);
+    assert.deepEqual(created.body, { id });
+    assert.equal(rowOf(id).owner_id, userId, '추가할 때 서버가 확인한 사용자 ID로 저장된다');
+    assert.deepEqual((await item(id, 'GET', headers)).body, { id, title: '새 메모', body: '새 내용' });
+    const edited = await item(id, 'PUT', headers, { body: { title: '고친 제목', body: '고친 내용' } });
+    assert.equal(edited.status, 200);
+    assert.deepEqual(edited.body, { id, title: '고친 제목', body: '고친 내용' });
+    assert.equal(rowOf(id).owner_id, userId);
+    assert.equal((await item(id, 'DELETE', headers)).status, 200);
+    assert.equal((await item(id, 'GET', headers)).status, 404);
+    assert.ok(!rowOf(id));
+  }
 });
 
-test('id가 없으면 서버가 UUID를 만들어 {id}로 돌려주고, 같은 id를 또 쓰면 409', async () => {
-  const created = await call('handleCollection', { method: 'POST', headers: asA, url: '/api/notes', body: { title: 't', body: 'b' } });
+test('B는 A의 메모를 읽을 수 없다(404, 내용 없음)', async () => {
+  const result = await item(A_NOTE, 'GET', asB);
+  assert.equal(result.status, 404);
+  assert.deepEqual(result.body, { error: 'NOT_FOUND' });
+  assert.ok(!JSON.stringify(result).includes('A 메모'));
+  // A도 B의 메모는 같은 방식으로 막힌다.
+  assert.equal((await item(B_NOTE, 'GET', asA)).status, 404);
+  // 남의 메모와 없는 메모의 응답이 같아서 존재 여부를 알 수 없다.
+  const missing = await item(crypto.randomUUID(), 'GET', asB);
+  assert.deepEqual(missing.body, result.body);
+  assert.equal(missing.status, result.status);
+});
+
+test('B는 A의 메모를 수정할 수 없고 A의 메모는 그대로다', async () => {
+  const before = JSON.stringify(rowOf(A_NOTE));
+  const result = await item(A_NOTE, 'PUT', asB, { body: { title: '탈취', body: '탈취' } });
+  assert.equal(result.status, 404);
+  assert.equal(JSON.stringify(rowOf(A_NOTE)), before);
+  // 본문에 자기 ID를 owner_id로 적어도 소유권을 가져갈 수 없다.
+  const steal = await item(A_NOTE, 'PUT', asB, { body: { title: '탈취', body: '탈취', owner_id: USER_B } });
+  assert.equal(steal.status, 404);
+  assert.equal(JSON.stringify(rowOf(A_NOTE)), before);
+});
+
+test('B는 A의 메모를 삭제할 수 없고 A의 메모는 그대로 남는다', async () => {
+  const result = await item(A_NOTE, 'DELETE', asB);
+  assert.equal(result.status, 404);
+  assert.equal(rowOf(A_NOTE).owner_id, USER_A);
+  assert.equal((await item(A_NOTE, 'GET', asA)).status, 200);
+  assert.equal((await item(B_NOTE, 'DELETE', asA)).status, 404);
+  assert.ok(rowOf(B_NOTE));
+});
+
+test('수정할 때 소유자를 바꾸려는 요청은 403으로 거부되고 아무것도 바뀌지 않는다', async () => {
+  const before = JSON.stringify(rows);
+  for (const owner of [{ owner_id: USER_B }, { ownerId: USER_B }, { user_id: USER_B }, { userId: USER_B }, { owner_id: null }, { owner_id: 5 }]) {
+    const result = await item(A_NOTE, 'PUT', asA, { body: { title: 't', body: 'b', ...owner } });
+    assert.equal(result.status, 403, JSON.stringify(owner));
+    assert.deepEqual(result.body, { error: 'OWNER_CHANGE_NOT_ALLOWED' });
+  }
+  assert.equal(JSON.stringify(rows), before);
+  // 확인된 자기 ID를 그대로 적은 요청은 문제없이 수정된다(소유자는 그대로 나).
+  const same = await item(A_NOTE, 'PUT', asA, { body: { title: '같은 주인', body: 'b', owner_id: USER_A } });
+  assert.equal(same.status, 200);
+  assert.equal(rowOf(A_NOTE).owner_id, USER_A);
+});
+
+test('추가할 때 본문·쿼리·헤더의 owner_id는 무시하고 확인된 ID로 저장하며, 남의 메모 id로는 덮어쓸 수 없다', async () => {
+  const created = await call('handleCollection', {
+    method: 'POST', headers: { ...asA, 'x-user-id': USER_B }, url: `/api/notes?owner_id=${USER_B}`,
+    query: { owner_id: USER_B }, body: { title: 't', body: 'b', owner_id: USER_B, userId: USER_B, role: 'admin' },
+  });
   assert.equal(created.status, 201);
-  assert.match(created.body.id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
-  assert.deepEqual(Object.keys(created.body), ['id']);
-  const again = await call('handleCollection', { method: 'POST', headers: asA, url: '/api/notes', body: { id: created.body.id, title: 't', body: 'b' } });
-  assert.equal(again.status, 409);
+  const saved = rowOf(created.body.id);
+  assert.equal(saved.owner_id, USER_A);
+  assert.equal(saved.role, undefined);
+  // B가 A의 메모와 같은 id로 추가해도 A의 메모는 바뀌지 않는다.
+  const before = JSON.stringify(rowOf(A_NOTE));
+  const clash = await create(asB, { id: A_NOTE, title: '덮어쓰기', body: '덮어쓰기' });
+  assert.equal(clash.status, 409);
+  assert.equal(JSON.stringify(rowOf(A_NOTE)), before);
+});
+
+test('주인이 없는 메모는 누구도 읽거나 고치거나 지울 수 없다', async () => {
+  for (const headers of [asA, asB]) {
+    assert.equal((await item(LEGACY, 'GET', headers)).status, 404);
+    assert.equal((await item(LEGACY, 'PUT', headers, { body: { title: 't', body: 'b' } })).status, 404);
+    assert.equal((await item(LEGACY, 'DELETE', headers)).status, 404);
+  }
+  assert.equal(rowOf(LEGACY).owner_id, null);
+});
+
+test('DB가 조건을 어기고 남의 행을 돌려줘도 코드의 소유자 비교가 한 번 더 막는다', async () => {
+  const leaky = createNotesService({
+    verifierOptions: { supabaseClient: fakeSupabase },
+    createDb: () => ({
+      from: () => {
+        const query = {
+          select: () => query, eq: () => query, order: () => query, update: () => query, delete: () => query,
+          maybeSingle: () => query,
+          then: (resolve) => resolve({ data: { note_id: A_NOTE, title: 'A 메모 1', content: 'A 내용 1', owner_id: USER_A }, error: null }),
+        };
+        return query;
+      },
+    }),
+  });
+  for (const method of ['GET', 'PUT']) {
+    const result = await call('handleItem', { method, url: `/api/notes/${A_NOTE}`, headers: asB, body: { title: 't', body: 'b' } }, leaky);
+    assert.equal(result.status, 404, method);
+    assert.ok(!JSON.stringify(result.body).includes('A 메모'));
+  }
+  const listing = createNotesService({
+    verifierOptions: { supabaseClient: fakeSupabase },
+    createDb: () => ({
+      from: () => {
+        const query = {
+          select: () => query, eq: () => query, order: () => query,
+          then: (resolve) => resolve({ data: [{ note_id: A_NOTE, title: 'A 메모 1', content: 'A 내용 1', owner_id: USER_A }], error: null }),
+        };
+        return query;
+      },
+    }),
+  });
+  assert.deepEqual((await call('handleCollection', { headers: asB, url: '/api/notes' }, listing)).body, []);
 });
 
 test('무로그인·위조·만료 토큰은 모든 경로와 메서드에서 401이고 DB를 건드리지 않는다', async () => {
@@ -181,9 +272,9 @@ test('무로그인·위조·만료 토큰은 모든 경로와 메서드에서 40
     const results = [
       await call('handleCollection', { method: 'GET', headers, url: '/api/notes' }),
       await call('handleCollection', { method: 'POST', headers, url: '/api/notes', body: { title: 't', body: 'b' } }),
-      await call('handleItem', { method: 'GET', headers, url: `/api/notes/${SEED_1}` }),
-      await call('handleItem', { method: 'PUT', headers, url: `/api/notes/${SEED_1}`, body: { title: 't', body: 'b' } }),
-      await call('handleItem', { method: 'DELETE', headers, url: `/api/notes/${SEED_1}` }),
+      await call('handleItem', { method: 'GET', headers, url: `/api/notes/${A_NOTE}` }),
+      await call('handleItem', { method: 'PUT', headers, url: `/api/notes/${A_NOTE}`, body: { title: 't', body: 'b' } }),
+      await call('handleItem', { method: 'DELETE', headers, url: `/api/notes/${A_NOTE}` }),
     ];
     for (const result of results) {
       assert.equal(result.status, 401, JSON.stringify(headers));
@@ -191,57 +282,42 @@ test('무로그인·위조·만료 토큰은 모든 경로와 메서드에서 40
     }
   }
   assert.equal(state.calls, 0);
-  assert.equal(rows.length, 3);
-});
-
-test('브라우저가 보낸 owner_id·userId·role은 저장되지 않는다', async () => {
-  const created = await call('handleCollection', {
-    method: 'POST', headers: { ...asA, 'x-user-id': USER_B }, url: '/api/notes?userId=' + USER_B,
-    query: { userId: USER_B },
-    body: { title: 't', body: 'b', owner_id: USER_B, userId: USER_B, role: 'admin', note_id: SEED_1 },
-  });
-  assert.equal(created.status, 201);
-  const saved = rows.at(-1);
-  assert.equal(saved.owner_id, USER_A);
-  assert.notEqual(saved.note_id, SEED_1);
-  assert.equal(saved.role, undefined);
-  const edited = await item(saved.note_id, 'PUT', { body: { title: 't2', body: 'b2', owner_id: USER_B } });
-  assert.equal(edited.status, 200);
-  assert.equal(rows.at(-1).owner_id, USER_A);
+  assert.equal(rows.length, 4);
 });
 
 test('값 검사: 제목·내용이 없거나 너무 길거나 id가 UUID가 아니면 400, 모양이 이상한 주소 id는 404', async () => {
-  const post = (body) => call('handleCollection', { method: 'POST', headers: asA, url: '/api/notes', body });
   for (const body of [undefined, null, 'text', [], {}, { title: '', body: 'b' }, { title: '   ', body: 'b' },
     { title: 't' }, { title: 't', body: 5 }, { title: 'x'.repeat(121), body: 'b' }, { title: 't', body: 'x'.repeat(5001) }]) {
-    const result = await post(body);
+    const result = await create(asA, body);
     assert.equal(result.status, 400, JSON.stringify(body)?.slice(0, 40));
     assert.deepEqual(result.body, { error: 'INVALID_NOTE' });
   }
-  const badId = await post({ id: 'not-a-uuid', title: 't', body: 'b' });
+  const badId = await create(asA, { id: 'not-a-uuid', title: 't', body: 'b' });
   assert.equal(badId.status, 400);
   assert.deepEqual(badId.body, { error: 'INVALID_ID' });
-  assert.equal((await post('{"title":"문자열 본문","body":"ok"}')).status, 201);
+  assert.equal((await create(asA, '{"title":"문자열 본문","body":"ok"}')).status, 201);
   const callsBefore = state.calls;
-  for (const id of ['abc', "1' or '1'='1", '../x', `${SEED_1}x`]) {
+  for (const id of ['abc', "1' or '1'='1", '../x', `${A_NOTE}x`]) {
     assert.equal((await item(encodeURIComponent(id))).status, 404);
   }
   assert.equal(state.calls, callsBefore, 'UUID 모양이 아닌 id로는 DB를 부르지 않는다');
-  assert.equal((await item(SEED_1, 'PUT', { body: { title: '', body: 'b' } })).status, 400);
+  assert.equal((await item(A_NOTE, 'PUT', asA, { body: { title: '', body: 'b' } })).status, 400);
 });
 
 test('주소의 id가 우선이고 ?id= 쿼리로 바꿔치기할 수 없다', async () => {
-  const result = await call('handleItem', { method: 'GET', headers: asA, url: `/api/notes/${SEED_1}?id=${SEED_2}`, query: { id: SEED_2 } });
-  assert.equal(result.body.id, SEED_1);
-  const viaQuery = await call('handleItem', { method: 'GET', headers: asA, url: undefined, query: { id: SEED_2 } });
-  assert.equal(viaQuery.body.id, SEED_2);
+  const result = await call('handleItem', { method: 'GET', headers: asA, url: `/api/notes/${A_NOTE}?id=${B_NOTE}`, query: { id: B_NOTE } });
+  assert.equal(result.body.id, A_NOTE);
+  const viaQuery = await call('handleItem', { method: 'GET', headers: asA, url: undefined, query: { id: A_NOTE_2 } });
+  assert.equal(viaQuery.body.id, A_NOTE_2);
+  const forbidden = await call('handleItem', { method: 'GET', headers: asA, url: `/api/notes/${A_NOTE}?id=${B_NOTE}&owner_id=${USER_B}`, query: { id: B_NOTE, owner_id: USER_B } });
+  assert.equal(forbidden.body.id, A_NOTE);
 });
 
 test('허용하지 않은 메서드는 405와 Allow 헤더', async () => {
   const a = await call('handleCollection', { method: 'DELETE', headers: asA, url: '/api/notes' });
   assert.equal(a.status, 405);
   assert.equal(a.headers.get('allow'), 'GET, POST');
-  const b = await call('handleItem', { method: 'POST', headers: asA, url: `/api/notes/${SEED_1}` });
+  const b = await call('handleItem', { method: 'POST', headers: asA, url: `/api/notes/${A_NOTE}` });
   assert.equal(b.status, 405);
   assert.equal(b.headers.get('allow'), 'GET, PUT, DELETE');
   assert.equal(state.calls, 0);
@@ -255,7 +331,7 @@ test('서버 설정이 없으면 500, DB 오류는 502이며 키·토큰·상세
   const read = await list();
   assert.equal(read.status, 502);
   assert.deepEqual(read.body, { error: 'NOTES_READ_FAILED' });
-  const write = await item(SEED_1, 'PUT', { body: { title: 't', body: 'b' } });
+  const write = await item(A_NOTE, 'PUT', asA, { body: { title: 't', body: 'b' } });
   assert.equal(write.status, 502);
   assert.deepEqual(write.body, { error: 'NOTES_WRITE_FAILED' });
   for (const secret of [FAKE_KEY, TOKEN_A, 'secret']) {
@@ -264,7 +340,7 @@ test('서버 설정이 없으면 500, DB 오류는 502이며 키·토큰·상세
   }
 });
 
-test('심판(judge) 발급 토큰은 도우미 규칙대로 통과하고 위조 서명은 거부한다', async () => {
+test('심판(judge) 발급 토큰은 자기 메모만 다루고 학생 A의 메모에는 닿지 못한다', async () => {
   const { privateKey, publicKey } = await generateKeyPair('ES256');
   const jwk = { ...(await exportJWK(publicKey)), kid: 'k1', alg: 'ES256', use: 'sig' };
   const judgeKeySet = createLocalJWKSet({ keys: [jwk] });
@@ -278,60 +354,52 @@ test('심판(judge) 발급 토큰은 도우미 규칙대로 통과하고 위조 
     verifierOptions: { supabaseClient: fakeSupabase, judgeKeySet },
     createDb: () => makeFakeDb(rows, state),
   });
-  const run = (token) => new Promise((resolve) => {
-    const out = {};
-    judgeService.handleCollection({ method: 'POST', headers: { authorization: `Bearer ${token}` }, url: '/api/notes', body: { title: 't', body: 'b' } },
-      { setHeader() {}, status: (code) => ({ json: (body) => { out.status = code; out.body = body; resolve(out); } }) });
-  });
-  assert.equal((await run(await sign(privateKey))).status, 201);
-  assert.equal(rows.at(-1).owner_id, judgeId);
+  const judge = { authorization: `Bearer ${await sign(privateKey)}` };
+  const created = await call('handleCollection', { method: 'POST', headers: judge, url: '/api/notes', body: { title: '심판 메모', body: 'x' } }, judgeService);
+  assert.equal(created.status, 201);
+  assert.equal(rowOf(created.body.id).owner_id, judgeId);
+  // 학생 A는 심판의 메모를, 심판은 학생 A의 메모를 읽고 고치고 지우지 못한다.
+  assert.equal((await item(created.body.id, 'GET', asA)).status, 404);
+  assert.equal((await item(created.body.id, 'PUT', asA, { body: { title: 't', body: 'b' } })).status, 404);
+  assert.equal((await item(created.body.id, 'DELETE', asA)).status, 404);
+  for (const method of ['GET', 'PUT', 'DELETE']) {
+    const result = await call('handleItem', { method, headers: judge, url: `/api/notes/${A_NOTE}`, body: { title: 't', body: 'b' } }, judgeService);
+    assert.equal(result.status, 404, method);
+  }
+  assert.ok(rowOf(created.body.id) && rowOf(A_NOTE).title === 'A 메모 1');
   const other = await generateKeyPair('ES256');
-  assert.equal((await run(await sign(other.privateKey))).status, 401);
+  const forged = await call('handleCollection', { headers: { authorization: `Bearer ${await sign(other.privateKey)}` }, url: '/api/notes' }, judgeService);
+  assert.equal(forged.status, 401);
 });
 
-test('실제 Supabase SDK가 만드는 요청 모양: 목록·추가·한 건·수정·삭제', async () => {
+test('실제 Supabase SDK가 만드는 요청 모양: 모든 요청에 note_id와 owner_id 조건이 함께 붙는다', async () => {
   const requests = [];
   globalThis.fetch = async (input, init = {}) => {
     const request = new Request(input, init);
-    requests.push({ method: request.method, url: decodeURIComponent(request.url), body: init.body ? JSON.parse(init.body) : null,
-      prefer: request.headers.get('prefer') });
-    const data = request.method === 'POST' ? null : [{ note_id: SEED_1, title: 't', content: 'c' }];
-    return new Response(data ? JSON.stringify(request.headers.get('accept')?.includes('vnd.pgrst.object') ? data[0] : data) : null,
+    requests.push({ method: request.method, url: decodeURIComponent(request.url), body: init.body ? JSON.parse(init.body) : null });
+    const row = { note_id: A_NOTE, title: 't', content: 'c', owner_id: USER_A };
+    const wantsObject = request.headers.get('accept')?.includes('vnd.pgrst.object');
+    return new Response(request.method === 'POST' ? null : JSON.stringify(wantsObject ? row : [row]),
       { status: request.method === 'POST' ? 201 : 200, headers: { 'content-type': 'application/json' } });
   };
   const real = createNotesService({ verifierOptions: { supabaseClient: fakeSupabase } });
-  const run = (name, req) => new Promise((resolve) => {
-    const out = {};
-    real[name]({ headers: asA, ...req }, { setHeader() {}, status: (code) => ({ json: (body) => { out.status = code; out.body = body; resolve(out); } }) });
-  });
-  await run('handleCollection', { method: 'GET', url: '/api/notes' });
-  await run('handleCollection', { method: 'POST', url: '/api/notes', body: { id: SEED_2, title: 'T', body: 'B', owner_id: USER_B } });
-  await run('handleItem', { method: 'GET', url: `/api/notes/${SEED_1}` });
-  await run('handleItem', { method: 'PUT', url: `/api/notes/${SEED_1}`, body: { title: 'T2', body: 'B2' } });
-  await run('handleItem', { method: 'DELETE', url: `/api/notes/${SEED_1}` });
+  await call('handleCollection', { headers: asA, url: '/api/notes' }, real);
+  await call('handleCollection', { method: 'POST', headers: asA, url: '/api/notes', body: { id: A_NOTE_2, title: 'T', body: 'B', owner_id: USER_B } }, real);
+  await call('handleItem', { headers: asA, url: `/api/notes/${A_NOTE}` }, real);
+  await call('handleItem', { method: 'PUT', headers: asA, url: `/api/notes/${A_NOTE}`, body: { title: 'T2', body: 'B2' } }, real);
+  await call('handleItem', { method: 'DELETE', headers: asA, url: `/api/notes/${A_NOTE}` }, real);
   const [listReq, postReq, getReq, putReq, delReq] = requests;
-  assert.equal(listReq.method, 'GET');
-  assert.match(listReq.url, new RegExp(`select=note_id,title,content`, 'u'));
-  assert.ok(listReq.url.includes(`or=(owner_id.eq.${USER_A},owner_id.is.null)`));
-  assert.ok(listReq.url.includes('order=id.asc'));
-  assert.equal(postReq.method, 'POST');
-  assert.deepEqual(postReq.body, { note_id: SEED_2, owner_id: USER_A, title: 'T', content: 'B' });
-  assert.equal(getReq.method, 'GET');
-  assert.ok(getReq.url.includes(`note_id=eq.${SEED_1}`));
+  assert.ok(listReq.url.includes(`owner_id=eq.${USER_A}`));
+  assert.ok(!listReq.url.includes('is.null'));
+  assert.deepEqual(postReq.body, { note_id: A_NOTE_2, owner_id: USER_A, title: 'T', content: 'B' });
+  for (const req of [getReq, putReq, delReq]) {
+    assert.ok(req.url.includes(`note_id=eq.${A_NOTE}`), req.method);
+    assert.ok(req.url.includes(`owner_id=eq.${USER_A}`), req.method);
+  }
   assert.equal(putReq.method, 'PATCH');
-  assert.deepEqual(putReq.body, { title: 'T2', content: 'B2' });
-  assert.ok(putReq.url.includes(`note_id=eq.${SEED_1}`));
+  assert.deepEqual(putReq.body, { title: 'T2', content: 'B2', owner_id: USER_A });
   assert.equal(delReq.method, 'DELETE');
-  assert.ok(delReq.url.includes(`note_id=eq.${SEED_1}`));
-  assert.ok(requests.every((r) => !JSON.stringify(r).includes('role')));
-});
-
-test('aleph.config.json: identityProvider에 비밀이 없고 allowedRoutes가 실제 경로와 같다', () => {
-  assert.deepEqual(Object.keys(STUDENT).sort(), ['audience', 'issuer', 'jwksUrl']);
-  assert.ok(!/sb_secret_|service_role|eyJ/u.test(JSON.stringify(STUDENT)));
-  assert.deepEqual([...config.allowedRoutes].sort(), [
-    'DELETE /api/notes/:id', 'GET /api/notes', 'GET /api/notes/:id', 'POST /api/notes', 'PUT /api/notes/:id',
-  ]);
+  assert.ok(requests.every((r) => !JSON.stringify(r).includes(USER_B)));
 });
 
 test('api 파일 두 개가 같은 서비스를 기본 내보내기로 연결하고, 토큰 없이는 401이다', async () => {
@@ -340,10 +408,18 @@ test('api 파일 두 개가 같은 서비스를 기본 내보내기로 연결하
   const { default: collection } = await import('../api/notes.js');
   const { default: itemHandler } = await import('../api/notes/[id].js');
   for (const [handler, method, url] of [[collection, 'GET', '/api/notes'], [collection, 'POST', '/api/notes'],
-    [itemHandler, 'GET', `/api/notes/${SEED_1}`], [itemHandler, 'PUT', `/api/notes/${SEED_1}`], [itemHandler, 'DELETE', `/api/notes/${SEED_1}`]]) {
+    [itemHandler, 'GET', `/api/notes/${A_NOTE}`], [itemHandler, 'PUT', `/api/notes/${A_NOTE}`], [itemHandler, 'DELETE', `/api/notes/${A_NOTE}`]]) {
     const out = {};
     await handler({ method, url, headers: {} }, { setHeader() {}, status: (code) => ({ json: (body) => { out.status = code; out.body = body; } }) });
     assert.equal(out.status, 401, `${method} ${url}`);
     assert.deepEqual(out.body, { error: 'UNAUTHORIZED' });
   }
+});
+
+test('aleph.config.json: identityProvider에 비밀이 없고 allowedRoutes가 실제 메서드·경로와 같다', () => {
+  assert.deepEqual(Object.keys(STUDENT).sort(), ['audience', 'issuer', 'jwksUrl']);
+  assert.ok(!/sb_secret_|service_role|eyJ/u.test(JSON.stringify(STUDENT)));
+  assert.deepEqual([...config.allowedRoutes].sort(), [
+    'DELETE /api/notes/:id', 'GET /api/notes', 'GET /api/notes/:id', 'POST /api/notes', 'PUT /api/notes/:id',
+  ]);
 });

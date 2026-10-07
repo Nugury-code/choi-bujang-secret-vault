@@ -5,15 +5,19 @@ import { createLoginVerifier } from './verify-login.mjs';
 
 // 가상 메모 추가·조회·수정·삭제를 하는 서버 쪽 공통 코드입니다.
 // - 로그인 토큰은 틀이 준 src/verify-login.mjs(도우미)로만 검사합니다. 도우미는 고치지 않습니다.
-// - 사용자 ID는 도우미가 확인한 값만 씁니다. 브라우저가 보낸 userId·owner_id·role은 읽지 않습니다.
+// - 사용자 ID는 도우미가 확인한 값만 씁니다. 주소·쿼리·본문·헤더의 userId·owner_id·role은 믿지 않습니다.
+// - 소유자 검사(4단계): 모든 읽기·수정·삭제는 "note_id가 같고 owner_id가 확인된 사용자 ID와 같은" 행에만 닿습니다.
+//   조건을 SQL 한 문장 안에 넣어서(확인 뒤 실행하는 두 단계가 아니라) 그 사이에 주인이 바뀌어도 남의 행은 건드리지 못하고,
+//   돌아온 행의 owner_id도 코드에서 한 번 더 비교합니다. 남의 메모와 없는 메모는 같은 404로 답해 존재 여부를 알려 주지 않습니다.
 // - SUPABASE_URL과 서버 전용 SUPABASE_SECRET_KEY는 Vercel 환경변수에서만 읽고, 키·토큰·메모 내용은 로그에 남기지 않습니다.
-// 아직 남은 약점(4단계에서 고칩니다): 소유자 검사가 없어서 로그인한 누구든 id만 알면 남의 메모를
-// 읽고 고치고 지울 수 있습니다. 서버가 확인한 사용자 ID는 추가할 때 owner_id로 저장하기만 합니다.
+// 아직 남은 일: 이 소유자 검사는 서버 코드에만 있습니다. DB 쪽 권한(GRANT·RLS)으로 한 번 더 막는 일은 다음 요청에서 합니다.
 
 export const TITLE_MAX = 120;
 export const BODY_MAX = 5000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
-const COLUMNS = 'note_id, title, content';
+const COLUMNS = 'note_id, title, content, owner_id';
+// 본문에 이 이름이 있어도 값으로 쓰지 않습니다. 수정 요청에서 다른 사람 ID가 적혀 있으면 소유자 변경 시도로 보고 거부합니다.
+const OWNER_KEYS = ['owner_id', 'ownerId', 'user_id', 'userId'];
 const toNote = (row) => ({ id: row.note_id, title: row.title, body: row.content });
 
 function send(response, status, body) {
@@ -111,11 +115,11 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
   async function handleCollection(request, response) {
     return run(request, response, ['GET', 'POST'], async ({ db, userId }) => {
       if (request.method === 'GET') {
-        // 내가 추가한 메모와, 주인이 없는 처음 가상 메모(owner_id 없음)를 돌려줍니다. 다른 사람의 메모는 목록에서 뺍니다.
+        // 내 메모만 돌려줍니다. 주인이 없거나 다른 사람 것인 메모는 목록에 나오지 않습니다.
         const { data, error } = await db.from('vault_notes').select(COLUMNS)
-          .or(`owner_id.eq.${userId},owner_id.is.null`).order('id');
+          .eq('owner_id', userId).order('id');
         if (error) return failed(response, error, 'read');
-        return send(response, 200, data.map(toNote));
+        return send(response, 200, data.filter((row) => row.owner_id === userId).map(toNote));
       }
       const body = parseBody(request);
       const fields = readNoteFields(body);
@@ -134,29 +138,39 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
     });
   }
 
-  // /api/notes/:id : GET(한 건), PUT(수정), DELETE(삭제)
+  // /api/notes/:id : GET(한 건), PUT(수정), DELETE(삭제). 모두 내 메모에만 동작합니다.
   async function handleItem(request, response) {
-    return run(request, response, ['GET', 'PUT', 'DELETE'], async ({ db }) => {
+    return run(request, response, ['GET', 'PUT', 'DELETE'], async ({ db, userId }) => {
       const rawId = idFromRequest(request);
       // 모양이 UUID가 아닌 id는 DB를 부르지 않고 없는 메모로 취급합니다.
       if (!UUID.test(rawId)) return send(response, 404, { error: 'NOT_FOUND' });
       const id = rawId.toLowerCase();
+      const notFound = () => send(response, 404, { error: 'NOT_FOUND' });
       if (request.method === 'GET') {
-        const { data, error } = await db.from('vault_notes').select(COLUMNS).eq('note_id', id).maybeSingle();
+        const { data, error } = await db.from('vault_notes').select(COLUMNS)
+          .eq('note_id', id).eq('owner_id', userId).maybeSingle();
         if (error) return failed(response, error, 'read');
-        return data ? send(response, 200, toNote(data)) : send(response, 404, { error: 'NOT_FOUND' });
+        // 조건에 맞는 행이 와도 owner_id를 한 번 더 비교합니다.
+        return data && data.owner_id === userId ? send(response, 200, toNote(data)) : notFound();
       }
       if (request.method === 'PUT') {
-        const fields = readNoteFields(parseBody(request));
+        const body = parseBody(request);
+        // 소유자 변경 시도: 본문에 확인된 사용자가 아닌 ID가 적혀 있으면 DB를 부르기 전에 거부합니다.
+        if (body && OWNER_KEYS.some((key) => key in body && body[key] !== userId)) {
+          return send(response, 403, { error: 'OWNER_CHANGE_NOT_ALLOWED' });
+        }
+        const fields = readNoteFields(body);
         if (!fields) return send(response, 400, { error: 'INVALID_NOTE' });
-        const { data, error } = await db.from('vault_notes').update(fields)
-          .eq('note_id', id).select(COLUMNS).maybeSingle();
+        // 기존 행의 주인이 나여야 하고(where), 새 행의 주인도 나로 고정합니다(set). 한 문장이라 사이에 끼어들 틈이 없습니다.
+        const { data, error } = await db.from('vault_notes').update({ ...fields, owner_id: userId })
+          .eq('note_id', id).eq('owner_id', userId).select(COLUMNS).maybeSingle();
         if (error) return failed(response, error, 'write');
-        return data ? send(response, 200, toNote(data)) : send(response, 404, { error: 'NOT_FOUND' });
+        return data && data.owner_id === userId ? send(response, 200, toNote(data)) : notFound();
       }
-      const { data, error } = await db.from('vault_notes').delete().eq('note_id', id).select('note_id');
+      const { data, error } = await db.from('vault_notes').delete()
+        .eq('note_id', id).eq('owner_id', userId).select('note_id, owner_id');
       if (error) return failed(response, error, 'write');
-      return data?.length ? send(response, 200, { id }) : send(response, 404, { error: 'NOT_FOUND' });
+      return data?.some((row) => row.owner_id === userId) ? send(response, 200, { id }) : notFound();
     });
   }
 

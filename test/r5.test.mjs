@@ -187,3 +187,79 @@ test('step 4 attack check keeps the login-free requests and records the A/B owne
     globalThis.fetch = originalFetch;
   }
 });
+
+test('step 5 attack check calls the original data API with the public key, searches public files for server secrets, and never records keys', async () => {
+  const originalFetch = globalThis.fetch;
+  const ORIGINAL = 'https://project.supabase.co/rest/v1/vault_notes';
+  const PUBLIC_KEY = `sb_publishable_${'a1B2c3D4'.repeat(4)}`;
+  const SERVER_KEY = `sb_secret_${'Z9y8X7w6'.repeat(3)}`;
+  const step5 = {
+    ...config,
+    step: 5,
+    originalApiUrl: ORIGINAL,
+    identityProvider: {
+      issuer: 'https://project.supabase.co/auth/v1', audience: 'authenticated',
+      jwksUrl: 'https://project.supabase.co/auth/v1/.well-known/jwks.json',
+    },
+  };
+  const calls = [];
+  const files = { '/': '<html>자료실</html>', '/app.js': `const KEY = '${PUBLIC_KEY}';`, '/vendor/supabase.js': 'x.startsWith("sb_secret_")', '/data.json': '{"notes":[]}' };
+  const install = ({ direct = () => new Response(JSON.stringify({ code: '42501', message: 'permission denied' }), { status: 401 }), pages = files } = {}) => {
+    calls.length = 0;
+    globalThis.fetch = async (url, init = {}) => {
+      const target = new URL(String(url));
+      calls.push({ href: target.href, method: init.method ?? 'GET', apikey: init.headers?.apikey ?? null, auth: init.headers?.Authorization ?? null });
+      if (target.origin === 'https://project.supabase.co') return direct(target, init);
+      if (target.pathname.startsWith('/api/')) return new Response(JSON.stringify({ error: 'UNAUTHORIZED' }), { status: 401 });
+      if (target.pathname in pages) return new Response(pages[target.pathname], { status: 200 });
+      return new Response('not found', { status: 404 });
+    };
+  };
+  try {
+    install();
+    const results = await runAttackChecks(step5);
+    assert.deepEqual(results.map(item => item.attackId), ['static_data_has_no_notes', 'anonymous_note_read', 'anonymous_note_create',
+      'anonymous_note_update', 'anonymous_note_delete', 'forged_token_read', 'expired_token_read', 'other_service_token_read',
+      'direct_data_api_read', 'direct_data_api_update', 'static_files_have_no_server_secret', 'cross_owner_access']);
+    assert.deepEqual(results.map(item => Object.keys(item).sort()).filter(keys => keys.join() !== 'attackId,expected,observed'), []);
+    assert.ok(results.every(item => item.expected.length <= 300 && item.observed.length <= 300));
+    assert.match(results[8].observed, /자료 없이 거절됨 \(HTTP 401\)/u);
+    assert.match(results[9].observed, /수정하면 거절됨 \(HTTP 401\)/u);
+    assert.match(results[10].observed, /4개\(.*\)에서 서버 전용 키 모양·로그인 토큰 모양·가상 메모 확인 표시가 보이지 않음/u);
+    assert.match(results[11].observed, /^미실행/u);
+    const direct = calls.filter(call => call.href.startsWith(ORIGINAL));
+    assert.deepEqual(direct.map(call => call.method), ['GET', 'PATCH']);
+    assert.ok(direct.every(call => call.apikey === PUBLIC_KEY && !call.auth), '공개 키만 쓰고 로그인 토큰은 쓰지 않습니다');
+    assert.equal(new URL(direct[0].href).search, '');
+    assert.match(new URL(direct[1].href).search, /^\?note_id=eq\.[0-9a-f-]{36}$/u);
+    const text = JSON.stringify(results);
+    assert.ok(!text.includes(PUBLIC_KEY) && !text.includes('a1B2c3D4') && !/Bearer|eyJ|sb_secret_[A-Za-z0-9]|@/u.test(text));
+
+    install({ direct: () => new Response(JSON.stringify([{ id: 'x', title: 'SECRET_TITLE' }]), { status: 200 }) });
+    const open = await runAttackChecks(step5);
+    assert.match(open[8].observed, /막히지 않고 성공함 \(HTTP 200\). 막지 못한 약점/u);
+    assert.match(open[9].observed, /막히지 않고 성공함 \(HTTP 200\)/u);
+    assert.ok(!JSON.stringify(open).includes('SECRET_TITLE'));
+
+    install({ pages: { ...files, '/app.js': `${files['/app.js']} const S = '${SERVER_KEY}';`, '/data.json': '{"sampleMarker":"SAMPLE_NOTE_1","notes":[]}' } });
+    const leaked = await runAttackChecks(step5);
+    assert.match(leaked[10].observed, /\/app\.js에 서버 전용 키 모양/u);
+    assert.match(leaked[10].observed, /\/data\.json에 가상 메모 확인 표시/u);
+    assert.match(leaked[10].observed, /막지 못한 약점/u);
+    assert.ok(!JSON.stringify(leaked).includes(SERVER_KEY) && !JSON.stringify(leaked).includes('Z9y8X7w6'));
+
+    install({ pages: { ...files, '/app.js': 'const none = 1;' } });
+    const noKey = await runAttackChecks(step5);
+    assert.match(noKey[8].observed, /^미실행: 공개 파일에서 공개 키를 찾지 못해/u);
+    assert.equal(calls.filter(call => call.href.startsWith(ORIGINAL)).length, 0);
+    install();
+    const noUrl = await runAttackChecks({ ...step5, originalApiUrl: null });
+    assert.match(noUrl[9].observed, /^미실행: aleph\.config\.json의 originalApiUrl이 없어/u);
+
+    globalThis.fetch = async () => { throw new Error('network'); };
+    const failed = await runAttackChecks(step5);
+    assert.match(failed[10].observed, /읽지 못해 확인하지 못함/u);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

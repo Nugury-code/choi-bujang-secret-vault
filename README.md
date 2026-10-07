@@ -22,7 +22,7 @@
 
 화면은 이제 `/data.json`이 아니라 서버 함수 `/api/notes`(`api/notes.js`)를 통해 학습용 DB의 가상 메모 네 건을 읽습니다. `data.json`과 `public/data.json`의 `notes`는 빈 배열이어서 `/data.json`을 열면 메모가 보이지 않아야 합니다. 메모 본문은 이 저장소에 두지 않습니다.
 
-서버 함수는 Vercel 프로젝트의 환경변수 `SUPABASE_URL`과 서버 전용 `SUPABASE_SECRET_KEY`를 읽습니다. 두 값은 코드, README, Git, 화면에 적지 않고 Vercel 설정 화면의 비밀 입력란에 직접 넣습니다. 서버 전용 키는 브라우저 파일, 응답, 로그에 나가지 않습니다. 테이블은 행 수준 보안(RLS)을 켜 두었고 `anon`·`authenticated`에는 읽기 권한을 주지 않았습니다(2단계 당시. 4단계에서 `authenticated`에 본인 행만 허용하는 권한과 정책을 더했습니다. 아래 4단계 절).
+서버 함수는 Vercel 프로젝트의 환경변수 `SUPABASE_URL`과 서버 전용 `SUPABASE_SECRET_KEY`를 읽습니다. 두 값은 코드, README, Git, 화면에 적지 않고 Vercel 설정 화면의 비밀 입력란에 직접 넣습니다. 서버 전용 키는 브라우저 파일, 응답, 로그에 나가지 않습니다. 테이블은 행 수준 보안(RLS)을 켜 두었고 `anon`·`authenticated`에는 읽기 권한을 주지 않았습니다(2단계 당시. 4단계에서 `authenticated`에 본인 행만 허용하는 권한과 정책을 더했고, 5단계에서 이 직접 권한을 다시 회수했습니다. 아래 4·5단계 절).
 
 **2단계 당시의 약점(3단계에서 토큰 검사로 막음):** `/api/notes`는 공개 주소이고 로그인이 없어서 누구나 이 주소를 부르면 같은 메모를 받을 수 있었습니다. 지금은 아래 3단계 절처럼 토큰 없이 부르면 401입니다. 그래도 이 DB에는 가상 메모만 둡니다. 옛 커밋과 옛 배포에는 이전의 공개 메모가 남아 있을 수 있어서, 이번 변경만으로 과거 노출이 해소됐다고 볼 수 없습니다.
 
@@ -122,7 +122,7 @@
 - 소유자 조건을 SQL 한 문장 안에 넣었습니다("확인한 뒤 실행"이 아니라 `where note_id = … and owner_id = 내 ID`). 그래서 확인과 실행 사이에 끼어들 틈이 없고, DB가 돌려준 행의 `owner_id`도 코드에서 한 번 더 비교합니다.
 - 주인이 비어 있는 메모는 아무도 읽거나 고치거나 지울 수 없습니다. 기존 가상 메모 4건은 SQL로 A에게 연결했고, B 시험 메모 1건이 있습니다.
 - 시험: `npm run test:notes`에 A·B 각자의 추가·조회·수정·삭제, B가 A의 메모를 읽기·수정·삭제하려는 시도, 소유자 변경 시도, 심판 신원 메모와의 분리가 들어 있습니다. 검사 줄을 일부러 빼면 해당 시험이 실패하는 것도 확인했습니다.
-- **DB의 두 번째 방어선:** 이 검사는 서버 코드에 있고, DB에도 같은 규칙을 한 겹 더 두었습니다(아래 "4단계 저장점" 절). 그래도 서버 키(`SUPABASE_SECRET_KEY`)로 DB를 부르면 DB의 행 단위 보안은 적용되지 않고 이 서버 코드의 검사만 남으므로, 서버 키는 계속 비밀로 둡니다.
+- **DB의 두 번째 방어선:** 이 검사는 서버 코드에 있고, DB에도 같은 규칙을 한 겹 더 두었습니다(아래 "4단계 저장점" 절). 그래도 서버 키(`SUPABASE_SECRET_KEY`)로 DB를 부르면 DB의 행 단위 보안은 적용되지 않고 이 서버 코드의 검사만 남으므로, 서버 키는 계속 비밀로 둡니다. (5단계에서 `authenticated`의 직접 권한은 회수했고 정책만 남겨 두었습니다. 아래 "5단계 저장점" 절.)
 
 ### 보안 응답 헤더
 
@@ -162,7 +162,7 @@
 
 - 3단계 기능은 그대로입니다: 로그인·로그아웃 화면, 서버의 로그인 토큰 검사(없거나 위조·만료·다른 서비스용이면 `401`), 로그인한 사람의 메모 추가·수정·삭제, 공개 `/data.json`은 `"notes": []`, 보안 응답 헤더 네 개.
 - **API의 소유자 검사:** 서버가 확인한 사용자 ID와 DB의 `owner_id`를 읽기·추가·수정·삭제마다 비교합니다. 규칙은 위 "4단계: API의 소유자 검사" 절의 표와 같습니다. 남의 메모와 없는 메모는 `404`, 소유자 변경 시도는 `403`입니다(B 계정으로 A가 새로 추가한 시험 메모의 `id`에 `GET`·`PUT`·소유자를 바꾼 `PUT`·`DELETE`를 보내 `404`·`404`·`403`·`404`를 받았고, A 화면에서 그 메모가 그대로 남아 있음을 확인. A·B 화면에서 각자 자기 메모만 보임).
-- **DB의 행 단위 보안(`vault_notes` 표만):** 기존 권한을 `REVOKE ALL ... FROM PUBLIC, anon, authenticated`로 모두 회수한 뒤 `authenticated`에만 `SELECT`·`INSERT`·`UPDATE`·`DELETE`를 줬습니다. 행 단위 보안은 켜져 있고 정책은 네 개입니다: `vault_notes_select_own`·`vault_notes_delete_own`은 기존 행 `USING`, `vault_notes_insert_own`은 새 행 `WITH CHECK`, `vault_notes_update_own`은 기존 행 `USING`과 새 행 `WITH CHECK`이며, 모두 대상이 `authenticated`이고 조건은 `(select auth.uid()) = owner_id`입니다. 그래서 로그인한 사용자가 서버 API를 거치지 않고 Supabase 데이터 API를 직접 불러도 자기 행만 보고 바꿀 수 있습니다(Supabase에서 `anon`은 `has_table_privilege` 기준 권한 없음, `authenticated`는 네 가지뿐, 정책 네 개, `anon`·`PUBLIC`의 열 단위 권한 0개를 조회로 확인). 서버 API가 쓰는 `service_role`은 행 단위 보안을 건너뛰는 서버 전용 역할이라 건드리지 않았습니다(Supabase 기본 권한으로 `TRUNCATE`·`REFERENCES`·`TRIGGER`도 붙어 있음).
+- **DB의 행 단위 보안(`vault_notes` 표만):** 기존 권한을 `REVOKE ALL ... FROM PUBLIC, anon, authenticated`로 모두 회수한 뒤 `authenticated`에만 `SELECT`·`INSERT`·`UPDATE`·`DELETE`를 줬습니다. 행 단위 보안은 켜져 있고 정책은 네 개입니다: `vault_notes_select_own`·`vault_notes_delete_own`은 기존 행 `USING`, `vault_notes_insert_own`은 새 행 `WITH CHECK`, `vault_notes_update_own`은 기존 행 `USING`과 새 행 `WITH CHECK`이며, 모두 대상이 `authenticated`이고 조건은 `(select auth.uid()) = owner_id`입니다. 그래서 로그인한 사용자가 서버 API를 거치지 않고 Supabase 데이터 API를 직접 불러도 자기 행만 보고 바꿀 수 있었습니다(이 직접 권한은 5단계에서 다시 회수함. Supabase에서 `anon`은 `has_table_privilege` 기준 권한 없음, `authenticated`는 네 가지뿐, 정책 네 개, `anon`·`PUBLIC`의 열 단위 권한 0개를 조회로 확인). 서버 API가 쓰는 `service_role`은 행 단위 보안을 건너뛰는 서버 전용 역할이라 건드리지 않았습니다(Supabase 기본 권한으로 `TRUNCATE`·`REFERENCES`·`TRIGGER`도 붙어 있음).
 - `aleph.config.json`: `step` 4, `identityProvider`와 `allowedRoutes`(다섯 경로)는 3단계와 같고 실제 메서드·경로와 맞습니다.
 
 **다시 실행하는 방법**
@@ -175,9 +175,37 @@
 
 **4단계 저장점 당시에 막지 못했던 것·미확인:** 요청 횟수 제한이 없습니다. Supabase 공개 가입 설정은 점검하지 않았습니다. 서버 키가 새면 행 단위 보안을 건너뛰어 모든 메모를 읽고 지울 수 있습니다(서버 키는 Vercel 비밀 입력란에만 둡니다). `authenticated`가 데이터 API로 자기 행을 직접 쓰면 API의 입력 검사(제목·내용 길이, UUID 모양)는 거치지 않습니다(자기 행에 한정). 옛 커밋과 옛 배포에는 이전 자료가 남아 있을 수 있습니다. 심판이 남의 메모 접근에 `404`를 받아들이는지, 적용 전 `anon`·`authenticated` 권한 표를 받지 못해 적용 전후 대조는 완성하지 못한 점도 확인하지 못했습니다. 화면 위쪽의 낡은 문구("서버 보호가 아직 없는 상태" 등)는 아직 고치지 않았습니다. `src/decider.mjs`의 `RULE_IDS`는 시작 틀의 `starter.deny` 하나뿐이며 이 단계에서 새 규칙을 만들지 않았습니다.
 
+### 5단계 저장점: 지금 작동하는 기능과 다시 실행하는 방법
+
+**지금 작동하는 기능** (실제 배포 주소와 Supabase에서 확인한 것은 괄호에 적었습니다)
+
+- 4단계까지의 기능은 그대로입니다: 로그인·로그아웃, 서버의 로그인 토큰 검사(`401`), 로그인한 사람의 메모 추가·수정·삭제, API의 소유자 검사(남의 메모 `404`, 소유자 변경 시도 `403`), 보안 응답 헤더 네 개, 공개 `/data.json`은 `"notes": []`.
+- **자료 요청은 서버 함수 한 곳으로 모읍니다.** 브라우저 코드(`public/app.js`, `public/index.html`)에는 Supabase 자료를 직접 읽거나 고치는 곳이 없습니다. Supabase 클라이언트는 로그인·로그아웃·로그인 상태 확인(Auth)에만 쓰고, 메모 읽기·추가·수정·삭제는 모두 같은 사이트의 `/api/notes`, `/api/notes/:id`로만 보냅니다(코드 검색으로 확인).
+- **DB의 직접 권한을 회수했습니다(`vault_notes` 표만).** `PUBLIC`·`anon`·`authenticated`의 권한을 모두 거두고 `service_role`(서버 함수가 서버 전용 설정으로 쓰는 역할)만 남겼습니다. 행 단위 보안은 켜 둔 채 정책 네 개(`authenticated` 대상, `auth.uid() = owner_id`)는 지우지 않고 남겨 두었습니다. 권한이 없는 동안에는 쓰이지 않고, 실수로 권한이 다시 생겨도 본인 행만 허용하는 안전장치가 됩니다(Supabase에서 적용 전후 조회: 적용 전 `authenticated` = SELECT·INSERT·UPDATE·DELETE, 적용 후 `anon`·`authenticated` 모두 권한 없음, 권한표에는 `service_role`만 남음, 열 단위 권한 18개에서 0개, 번호표(시퀀스) 권한은 전후 모두 없음, 행 단위 보안 켜짐 유지, 정책 4개 유지).
+- **원본 자료 API 주소를 기록했습니다.** `aleph.config.json`의 `originalApiUrl`은 쿼리 없는 `https://<프로젝트>.supabase.co/rest/v1/vault_notes`이며, `step`은 5입니다. `identityProvider`와 `allowedRoutes`(다섯 경로)는 4단계와 같고 실제 메서드·경로와 맞습니다. `restoreRoute`는 아직 비어 있습니다.
+- 공개 키(`anon`)로 원본 경로를 직접 `GET`(쿼리 없이와 `?select=id`)·`PATCH`·`DELETE`·`POST`로 부르면 모두 `401`과 권한 오류 코드 `42501`이고 자료는 내려오지 않습니다(앱 안 브라우저에서 보낸 실제 요청으로 확인. 일치하는 행이 없는 조건으로만 보냈습니다). 화면에서 A 로그인으로 메모 읽기·추가·수정·삭제는 권한 회수 뒤에도 됩니다(사용자 확인).
+
+**다시 실행하는 방법**
+
+1. `npm install`을 한 번 실행합니다.
+2. 시험: `npm run test:r5`(7개), `npm run test:package`(3개), `npm run test:notes`(18개), `npm run test:auth`(4개). 모두 통과해야 합니다.
+3. DB의 직접 권한 회수는 Supabase SQL Editor에서 직접 실행했고 **이 SQL 파일은 저장소에 두지 않았습니다.** 다시 만들 때는 아래 두 문장을 한 번에 실행하고, 실행하기 **전에** 먼저 권한을 조회해 기록해 둡니다(전 조회, 변경, 후 조회 순서).
+
+```sql
+begin;
+alter table public.vault_notes enable row level security;
+revoke all on table public.vault_notes from public, anon, authenticated;
+commit;
+```
+
+   조회는 `information_schema.role_table_grants`, `has_table_privilege`(`anon`·`authenticated`·`service_role`), `information_schema.column_privileges`, `pg_policies`로 합니다. 적용 뒤에는 화면에서 A 로그인으로 메모를 읽고 추가·수정·삭제해 서버 함수 경로가 그대로 되는지 봅니다.
+4. 제출 묶음: 변경을 커밋한 뒤 `npm run bundle`을 실행합니다(`bundle-notes.json`과 `artifacts/submission.json`은 커밋하지 않습니다). 5단계부터 `originalApiUrl`(HTTPS)이 없으면 묶음이 만들어지지 않습니다. 직접 점검(`src/attack-check.mjs`)은 배포 주소에 실제로 요청을 보냅니다: 공개 `/data.json`, 로그인 없는 요청 여섯 개(목록 읽기·메모 추가·수정·삭제, 위조·만료 모양·다른 서비스용 모양의 가짜 토큰은 세 개로 따로), **공개 파일에서 찾은 공개 키로 원본 자료 API를 직접 조회·수정**(수정은 일치하는 행이 없는 조건으로만 보내 자료를 바꾸지 않음), **공개 파일 네 개(`/`, `/app.js`, `/vendor/supabase.js`, `/data.json`)에서 서버 전용 키 모양·로그인 토큰 모양·가상 메모 확인 표시 검색**. 결과에는 상태 코드와 찾았는지 여부만 적고 키 값은 적지 않습니다. 서명된 A·B 로그인 토큰이 필요한 "A·B가 서로의 메모에 접근하지 못함"과, 로그인한 시험 계정 토큰으로 원본 API를 직접 부르는 요청은 보내지 않으며 앞의 것은 `미실행`으로 한 항목을 적습니다.
+
+**5단계 저장점 당시에 막지 못했던 것·미확인:** 요청 횟수 제한이 없습니다. Supabase 공개 가입 설정은 점검하지 않았습니다. `service_role`에는 Supabase 기본 권한(`TRUNCATE`·`REFERENCES`·`TRIGGER` 포함)이 남아 있고, 서버 키가 새면 DB의 행 단위 보안을 건너뛰어 모든 메모를 읽고 지울 수 있습니다(서버 키는 Vercel 비밀 입력란에만 둡니다). 옛 커밋과 옛 배포에는 이전 자료가 남아 있을 수 있습니다. 심판이 남의 메모 접근에 `404`를 받아들이는지, 심판의 5단계 판정은 확인하지 못했습니다. 화면 위쪽의 낡은 문구("서버 보호가 아직 없는 상태", "3단계 로그인 화면" 등)는 사용자가 5단계 뒤에 보고 결정하기로 해 아직 고치지 않았습니다. `src/decider.mjs`의 `RULE_IDS`는 시작 틀의 `starter.deny` 하나뿐이며 이 단계에서 새 규칙을 만들지 않았습니다.
+
 ### 이번 단계 변경 때문에 동작이 깨졌을 때 되돌리는 방법
 
-마지막으로 정상 동작을 확인한 커밋은 `1a81884`(4단계 저장점. 배포된 `/aleph.json`이 `step` 4와 이 커밋으로 나오고, A·B가 각자 자기 메모만 보고 추가·수정·삭제하고, B가 A의 메모를 읽기·수정·삭제·소유자 변경하려 하면 거부되고, 로그인 없는 요청은 401이며, 4단계 판정 100점)입니다. 그보다 앞서 소유자 검사까지 확인한 커밋은 `60a3f7b`, 3단계 저장점까지 확인한 커밋은 `2afe0c2`, 메모 추가·수정·삭제까지 확인한 커밋은 `ae82841`, 화면과 헤더만 확인한 커밋은 `e277619`입니다. 깨졌다면 아래 순서로 되돌립니다. `git reset --hard`는 쓰지 않습니다.
+마지막으로 정상 동작을 확인한 커밋은 `a99409f`(원본 자료 경로 기록. 배포된 `/aleph.json`이 이 커밋으로 나오고, 직접 권한 회수 SQL 적용 뒤에도 A 로그인으로 메모 읽기·추가·수정·삭제가 되고, 공개 키로 원본 자료 API를 직접 조회·수정·삭제·추가하면 401과 권한 오류 코드 `42501`, 로그인 없는 요청은 401)입니다. 그보다 앞서 4단계 저장점까지 확인한 커밋은 `1a81884`(4단계 판정 100점), 소유자 검사까지 확인한 커밋은 `60a3f7b`, 3단계 저장점까지 확인한 커밋은 `2afe0c2`, 메모 추가·수정·삭제까지 확인한 커밋은 `ae82841`, 화면과 헤더만 확인한 커밋은 `e277619`입니다. 깨졌다면 아래 순서로 되돌립니다. `git reset --hard`는 쓰지 않습니다.
 
 1. `git status`와 `git diff`로 이번 단계 변경과 다른 변경을 먼저 구분합니다.
 2. 문제를 만든 커밋만 `git revert <커밋>`으로 되돌립니다. 기록을 지우지 않고 되돌리는 새 커밋이 생깁니다.

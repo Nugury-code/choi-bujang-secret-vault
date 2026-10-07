@@ -106,8 +106,8 @@
     },
     {
       "alertId": "bf-18",
-      "action": "alert",
-      "confidence": 0.55,
+      "action": "block",
+      "confidence": 0.95,
       "reason": "근거 패턴: 짧은 시간 같은 주소의 로그인 실패 연속"
     },
     {
@@ -172,8 +172,8 @@
     }
   ],
   "counts": {
-    "block": 10,
-    "alert": 9,
+    "block": 11,
+    "alert": 8,
     "record": 9
   }
 }

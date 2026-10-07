@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { deploymentIdentity } from './deployment-identity.mjs';
 
@@ -10,14 +10,9 @@ if (!Number.isInteger(config.step) || config.step < 1 || config.step > 12) {
   throw new Error('aleph.config.json의 step을 확인해 주세요.');
 }
 await mkdir(resolve(root, 'public'), { recursive: true });
-// 3단계: 로그인 화면은 공식 Supabase SDK 파일을 같은 사이트에서 제공합니다(외부 CDN은 CSP가 막습니다).
-// 버전은 package.json이 고정한 @supabase/supabase-js를 따라가며, 복사본은 Git에 올리지 않습니다.
-const sdkSource = resolve(root, 'node_modules', '@supabase', 'supabase-js', 'dist', 'umd', 'supabase.js');
-await mkdir(resolve(root, 'public', 'vendor'), { recursive: true });
-await copyFile(sdkSource, resolve(root, 'public', 'vendor', 'supabase.js')).catch(() => {
-  throw new Error('Supabase SDK 파일을 찾지 못했습니다. npm install을 먼저 실행해 주세요.');
-});
-console.log('공식 Supabase SDK를 public/vendor/supabase.js에 복사했습니다.');
+// 5단계부터 로그인은 서버 함수(/api/auth/…)가 하므로 브라우저에 Supabase SDK 파일을 내보내지 않습니다.
+// 이전 빌드가 남긴 복사본이 있으면 지웁니다(Git에 올라가지 않는 폴더).
+await rm(resolve(root, 'public', 'vendor'), { recursive: true, force: true });
 if (config.step === 1) {
   const data = JSON.parse(await readFile(source, 'utf8'));
   if (!Array.isArray(data.notes)) {

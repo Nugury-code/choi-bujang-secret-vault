@@ -1,7 +1,7 @@
-// 3단계 로그인 화면. 공식 Supabase SDK(/vendor/supabase.js, 빌드가 node_modules에서 복사)만 쓰고
-// 비밀번호 확인과 토큰 발급은 Supabase Auth가 합니다. 이 파일에는 공개용 값만 있습니다.
-const SUPABASE_URL = 'https://hphdsuxmehoshbcdyjvc.supabase.co';
-const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_Rn7GgSFuUWmpVwt_Q-E_og_q2VbZwoy';
+// 로그인 화면. 로그인·토큰 갱신·로그아웃은 모두 같은 사이트의 서버 함수(/api/auth/…)가 Supabase Auth와 주고받습니다.
+// 이 파일에는 Supabase 주소도 공개 키도 없습니다. 비밀번호는 서버 함수로 보내기만 하고 저장하지 않으며,
+// 서버가 준 짧은 접근 토큰은 이 페이지의 메모리에만 둡니다(저장소·쿠키에 쓰지 않습니다).
+// 오래 사는 갱신 토큰은 서버가 JavaScript가 읽을 수 없는 쿠키(HttpOnly)로만 보관합니다.
 
 const $ = (id) => document.getElementById(id);
 const form = $('login-form');
@@ -17,20 +17,63 @@ function showError(message) {
 }
 
 // 로그인 실패 이유를 사람이 읽을 수 있게 알려 주되, 계정이 있는지 없는지는 구분하지 않습니다.
-function reasonOf(error) {
-  const code = error?.code ?? '';
-  if (code === 'invalid_credentials' || /invalid login credentials/iu.test(error?.message ?? '')) {
-    return '이메일 또는 비밀번호가 맞지 않습니다.';
-  }
-  if (code === 'email_not_confirmed') return '이메일 인증이 아직 끝나지 않은 계정입니다.';
-  if (code === 'over_request_rate_limit' || error?.status === 429) {
-    return '시도가 너무 많습니다. 잠시 뒤에 다시 시도해 주세요.';
-  }
-  if (code === 'user_banned') return '이 계정은 지금 로그인할 수 없습니다.';
-  if (error?.name === 'AuthRetryableFetchError' || error?.status === 0) {
-    return '로그인 서버에 연결하지 못했습니다. 네트워크를 확인해 주세요.';
-  }
+function reasonOfLogin(status, code) {
+  if (status === 401 && code === 'INVALID_CREDENTIALS') return '이메일 또는 비밀번호가 맞지 않습니다.';
+  if (code === 'EMAIL_NOT_CONFIRMED') return '이메일 인증이 아직 끝나지 않은 계정입니다.';
+  if (code === 'ACCOUNT_BLOCKED') return '이 계정은 지금 로그인할 수 없습니다.';
+  if (status === 429) return '시도가 너무 많습니다. 잠시 뒤에 다시 시도해 주세요.';
+  if (status === 400) return '이메일과 비밀번호를 확인해 주세요.';
+  if (status === null || status >= 500) return '로그인 서버에 연결하지 못했습니다. 네트워크를 확인해 주세요.';
   return `로그인하지 못했습니다.${code ? ` (오류 코드: ${code})` : ''}`;
+}
+
+// 서버 함수(/api/auth/…)에 JSON을 보냅니다. 갱신 토큰 쿠키는 브라우저가 같은 사이트 요청에만 자동으로 붙입니다.
+async function authCall(path, payload, accessToken) {
+  const headers = {};
+  if (payload !== undefined) headers['Content-Type'] = 'application/json';
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+  let response;
+  try {
+    response = await fetch(path, {
+      method: 'POST', cache: 'no-store', credentials: 'same-origin', headers,
+      body: payload === undefined ? undefined : JSON.stringify(payload),
+    });
+  } catch {
+    return { status: null, data: null };
+  }
+  let data = null;
+  try { data = await response.json(); } catch { /* 본문이 없거나 JSON이 아닙니다. */ }
+  return { status: response.status, data };
+}
+
+let token = null;
+let refreshTimer = null;
+
+function sessionFrom(data) {
+  if (typeof data?.access_token !== 'string') return null;
+  return { access_token: data.access_token, expires_in: data.expires_in,
+    user: { id: data.user?.id ?? null, email: data.user?.email ?? '' } };
+}
+
+// 접근 토큰이 끝나기 1분 전에 서버에서 새 토큰을 받아 둡니다.
+function scheduleRefresh(session) {
+  clearTimeout(refreshTimer);
+  const seconds = Number.isFinite(session?.expires_in) ? session.expires_in : 3600;
+  refreshTimer = setTimeout(() => { refreshSession().catch(() => {}); }, Math.max(30, seconds - 60) * 1000);
+}
+
+let refreshing = null;
+// 서버에 새 접근 토큰을 요청합니다(동시에 여러 번 부르면 한 번만 보냅니다). 실패하면 로그아웃 상태로 돌아갑니다.
+function refreshSession() {
+  refreshing ??= (async () => {
+    const result = await authCall('/api/auth/refresh');
+    const session = result.status === 200 ? sessionFrom(result.data) : null;
+    if (session) render(session);
+    else if (result.status === 401) render(null);
+    else if (result.status === 429) showError('시도가 너무 많습니다. 잠시 뒤에 다시 시도해 주세요.');
+    return session;
+  })().finally(() => { refreshing = null; });
+  return refreshing;
 }
 
 function render(session) {
@@ -41,18 +84,19 @@ function render(session) {
   $('account-email').textContent = email;
   status.textContent = session ? '로그인되어 있습니다.' : '로그인하지 않은 상태입니다.';
   token = session?.access_token ?? null;
+  if (session) scheduleRefresh(session);
+  else clearTimeout(refreshTimer);
   loadNotes(session?.user?.id ?? null);
 }
 
 // 자료 목록·추가·수정·삭제는 로그인 토큰을 실어 /api/notes 로 보냅니다. 토큰 검사와 사용자 확인은 서버가 하며,
-// 화면은 userId·owner_id·role 같은 값을 보내지 않고 SDK가 준 access_token과 제목·내용만 보냅니다.
+// 화면은 userId·owner_id·role 같은 값을 보내지 않고 서버가 준 access_token과 제목·내용만 보냅니다.
 const list = document.querySelector('#notes');
 const editor = $('note-editor');
 const noteForm = $('note-form');
 const noteError = $('note-error');
 const addButton = $('note-add');
 const NOTE_RULE = '제목(120자 이하)과 내용(5000자 이하)을 확인해 주세요.';
-let token = null;
 let loadId = 0;
 let loadedFor;
 
@@ -73,10 +117,11 @@ function reasonOfStatus(status) {
   if (status === 400) return NOTE_RULE;
   if (status === 404) return '이미 없는 메모입니다. 목록을 새로 불러왔습니다.';
   if (status === 409) return '같은 번호의 메모가 이미 있습니다.';
+  if (status === 429) return '요청이 너무 많습니다. 잠시 뒤에 다시 시도해 주세요.';
   return '서버에서 처리하지 못했습니다. 잠시 뒤에 다시 시도해 주세요.';
 }
 
-async function callApi(path, method, payload) {
+async function callApi(path, method, payload, retried = false) {
   if (!token) throw Object.assign(new Error('NO_TOKEN'), { status: 401 });
   const headers = { Authorization: `Bearer ${token}` };
   if (payload !== undefined) headers['Content-Type'] = 'application/json';
@@ -86,6 +131,8 @@ async function callApi(path, method, payload) {
     headers,
     body: payload === undefined ? undefined : JSON.stringify(payload),
   });
+  // 접근 토큰이 끝났을 수 있으니 한 번만 새 토큰을 받아 다시 보냅니다.
+  if (response.status === 401 && !retried && await refreshSession()) return callApi(path, method, payload, true);
   let data = null;
   try { data = await response.json(); } catch { /* 본문이 없거나 JSON이 아닙니다. */ }
   if (!response.ok) throw Object.assign(new Error('REQUEST_FAILED'), { status: response.status });
@@ -225,13 +272,6 @@ noteForm.addEventListener('submit', async (event) => {
 });
 
 function setupAuth() {
-  const client = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
-    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
-  });
-
-  // 상태 변화 안에서는 화면만 바꿉니다(여기서 SDK를 다시 부르지 않습니다).
-  client.auth.onAuthStateChange((_event, session) => render(session));
-
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     showError('');
@@ -243,11 +283,14 @@ function setupAuth() {
     }
     loginButton.disabled = true;
     try {
-      const { error } = await client.auth.signInWithPassword({ email, password });
-      if (error) showError(reasonOf(error));
-      else $('password').value = '';
-    } catch (error) {
-      showError(reasonOf(error));
+      const result = await authCall('/api/auth/login', { email, password });
+      const session = result.status === 200 ? sessionFrom(result.data) : null;
+      if (session) {
+        $('password').value = '';
+        render(session);
+      } else {
+        showError(reasonOfLogin(result.status, result.data?.error));
+      }
     } finally {
       loginButton.disabled = false;
     }
@@ -256,24 +299,15 @@ function setupAuth() {
   logoutButton.addEventListener('click', async () => {
     showError('');
     logoutButton.disabled = true;
-    try {
-      const { error } = await client.auth.signOut();
-      if (error) showError('로그아웃 요청이 서버에 닿지 않았지만 이 브라우저의 로그인 정보는 지웠습니다.');
-    } catch {
-      showError('로그아웃 중 오류가 났습니다. 다시 시도해 주세요.');
-    } finally {
-      logoutButton.disabled = false;
-    }
+    const result = await authCall('/api/auth/logout', undefined, token);
+    // 서버에 닿지 않아도 이 화면의 로그인 정보는 지웁니다.
+    render(null);
+    if (result.status !== 200) showError('로그아웃 요청이 서버에 닿지 않았지만 이 화면의 로그인 정보는 지웠습니다. 다시 시도해 주세요.');
+    logoutButton.disabled = false;
   });
 
-  // 시작할 때 저장된 로그인 상태를 한 번 읽어 화면에 반영합니다.
-  client.auth.getSession().then(({ data }) => render(data.session)).catch(() => render(null));
+  // 시작할 때 서버에 로그인 상태(쿠키)를 한 번 물어 화면에 반영합니다.
+  refreshSession().then((session) => { if (!session) render(null); }).catch(() => render(null));
 }
 
-if (window.supabase?.createClient) {
-  setupAuth();
-} else {
-  status.textContent = '로그인 기능을 불러오지 못했습니다.';
-  loadNotes(null);
-  showError('로그인 SDK 파일(/vendor/supabase.js)을 읽지 못했습니다. 다시 배포되었는지 확인해 주세요.');
-}
+setupAuth();

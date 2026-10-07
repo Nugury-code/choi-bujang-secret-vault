@@ -37,14 +37,30 @@ test('build identity records the step from the config', () => {
   assert.throws(() => deploymentIdentity(env, { ...config, step: 13 }));
 });
 
-test('build identity records originalApiUrl from step 5 only when it is a plain https path', () => {
+test('build identity records originalApiUrl (step 5+) and allowedRoutes/identityProvider (step 3+) only when valid', () => {
   const url = 'https://project.supabase.co/rest/v1/vault_notes';
-  assert.equal('originalApiUrl' in deploymentIdentity(env, { ...config, step: 4, originalApiUrl: url }), false);
-  assert.equal(deploymentIdentity(env, { ...config, step: 5, originalApiUrl: url }).originalApiUrl, url);
+  const provider = { issuer: 'https://project.supabase.co/auth/v1', audience: 'authenticated',
+    jwksUrl: 'https://project.supabase.co/auth/v1/.well-known/jwks.json' };
+  const routes = ['GET /api/notes', 'PUT /api/notes/:id', 'POST /api/auth/login'];
+  const base = { ...config, identityProvider: provider, allowedRoutes: routes, originalApiUrl: url };
+  const step2 = deploymentIdentity(env, { ...base, step: 2 });
+  assert.equal('originalApiUrl' in step2 || 'allowedRoutes' in step2 || 'identityProvider' in step2, false);
+  const step4 = deploymentIdentity(env, { ...base, step: 4 });
+  assert.deepEqual(step4.allowedRoutes, routes);
+  assert.deepEqual(step4.identityProvider, provider);
+  assert.equal('originalApiUrl' in step4, false);
+  const step5 = deploymentIdentity(env, { ...base, step: 5 });
+  assert.equal(step5.originalApiUrl, url);
+  assert.deepEqual(step5.allowedRoutes, routes);
   for (const bad of [null, undefined, '', 'http://project.supabase.co/rest/v1/vault_notes', `${url}?select=*`,
     `${url}#x`, 'https://user:pw@project.supabase.co/rest/v1/vault_notes', 'not a url']) {
-    assert.throws(() => deploymentIdentity(env, { ...config, step: 5, originalApiUrl: bad }));
+    assert.throws(() => deploymentIdentity(env, { ...base, step: 5, originalApiUrl: bad }));
   }
+  for (const bad of [undefined, [], ['getnotes'], ['GET api/notes'], ['TRACE /api/notes'], [42]]) {
+    assert.throws(() => deploymentIdentity(env, { ...base, step: 3, allowedRoutes: bad }));
+  }
+  assert.throws(() => deploymentIdentity(env, { ...base, step: 3, identityProvider: null }));
+  assert.throws(() => deploymentIdentity(env, { ...base, step: 3, identityProvider: { issuer: 'x' } }));
 });
 
 test('first attack check reads public data.json without credentials', async () => {
@@ -198,8 +214,9 @@ test('step 4 attack check keeps the login-free requests and records the A/B owne
   }
 });
 
-test('step 5 attack check calls the original data API with the public key, searches public files for server secrets, and never records keys', async () => {
+test('step 5 attack check calls the original data API with the given public key, searches public files for server and public keys, and never records keys', async () => {
   const originalFetch = globalThis.fetch;
+  const originalEnv = process.env.SUPABASE_PUBLISHABLE_KEY;
   const ORIGINAL = 'https://project.supabase.co/rest/v1/vault_notes';
   const PUBLIC_KEY = `sb_publishable_${'a1B2c3D4'.repeat(4)}`;
   const SERVER_KEY = `sb_secret_${'Z9y8X7w6'.repeat(3)}`;
@@ -213,7 +230,8 @@ test('step 5 attack check calls the original data API with the public key, searc
     },
   };
   const calls = [];
-  const files = { '/': '<html>자료실</html>', '/app.js': `const KEY = '${PUBLIC_KEY}';`, '/vendor/supabase.js': 'x.startsWith("sb_secret_")', '/data.json': '{"notes":[]}' };
+  const files = { '/': '<html>자료실</html>', '/app.js': 'const none = 1;', '/data.json': '{"notes":[]}' };
+  process.env.SUPABASE_PUBLISHABLE_KEY = PUBLIC_KEY;
   const install = ({ direct = () => new Response(JSON.stringify({ code: '42501', message: 'permission denied' }), { status: 401 }), pages = files } = {}) => {
     calls.length = 0;
     globalThis.fetch = async (url, init = {}) => {
@@ -235,7 +253,7 @@ test('step 5 attack check calls the original data API with the public key, searc
     assert.ok(results.every(item => item.expected.length <= 300 && item.observed.length <= 300));
     assert.match(results[8].observed, /자료 없이 거절됨 \(HTTP 401\)/u);
     assert.match(results[9].observed, /수정하면 거절됨 \(HTTP 401\)/u);
-    assert.match(results[10].observed, /4개\(.*\)에서 서버 전용 키 모양·로그인 토큰 모양·가상 메모 확인 표시가 보이지 않음/u);
+    assert.match(results[10].observed, /3개\(.*\)에서 서버 전용 키 모양·Supabase 공개 키 모양·로그인 토큰 모양·가상 메모 확인 표시가 보이지 않음/u);
     assert.match(results[11].observed, /^미실행/u);
     const direct = calls.filter(call => call.href.startsWith(ORIGINAL));
     assert.deepEqual(direct.map(call => call.method), ['GET', 'PATCH']);
@@ -258,10 +276,20 @@ test('step 5 attack check calls the original data API with the public key, searc
     assert.match(leaked[10].observed, /막지 못한 약점/u);
     assert.ok(!JSON.stringify(leaked).includes(SERVER_KEY) && !JSON.stringify(leaked).includes('Z9y8X7w6'));
 
-    install({ pages: { ...files, '/app.js': 'const none = 1;' } });
+    // 화면 파일에 공개 키가 남아 있으면 약점으로 보고합니다(키 값은 적지 않습니다).
+    install({ pages: { ...files, '/app.js': `const KEY = '${PUBLIC_KEY}';` } });
+    const exposed = await runAttackChecks(step5);
+    assert.match(exposed[10].observed, /\/app\.js에 Supabase 공개 키 모양/u);
+    assert.match(exposed[10].observed, /막지 못한 약점/u);
+    assert.ok(!JSON.stringify(exposed).includes(PUBLIC_KEY) && !JSON.stringify(exposed).includes('a1B2c3D4'));
+
+    // 환경변수도 없고 화면 파일에도 키가 없으면 직접 요청은 보내지 않고 미실행으로 적습니다.
+    delete process.env.SUPABASE_PUBLISHABLE_KEY;
+    install();
     const noKey = await runAttackChecks(step5);
-    assert.match(noKey[8].observed, /^미실행: 공개 파일에서 공개 키를 찾지 못해/u);
+    assert.match(noKey[8].observed, /^미실행: 공개 키가 없어/u);
     assert.equal(calls.filter(call => call.href.startsWith(ORIGINAL)).length, 0);
+    process.env.SUPABASE_PUBLISHABLE_KEY = PUBLIC_KEY;
     install();
     const noUrl = await runAttackChecks({ ...step5, originalApiUrl: null });
     assert.match(noUrl[9].observed, /^미실행: aleph\.config\.json의 originalApiUrl이 없어/u);
@@ -271,5 +299,7 @@ test('step 5 attack check calls the original data API with the public key, searc
     assert.match(failed[10].observed, /읽지 못해 확인하지 못함/u);
   } finally {
     globalThis.fetch = originalFetch;
+    if (originalEnv === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
+    else process.env.SUPABASE_PUBLISHABLE_KEY = originalEnv;
   }
 });

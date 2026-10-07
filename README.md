@@ -67,8 +67,8 @@
 
 화면에 Supabase Auth 이메일·비밀번호 로그인과 로그아웃을 붙였습니다. 비밀번호 확인과 로그인 토큰 발급은 Supabase Auth가 하고, 이 저장소의 코드는 비밀번호나 토큰을 직접 만들거나 저장하지 않습니다.
 
-- `public/app.js`가 공식 SDK(`signInWithPassword`, `signOut`, `onAuthStateChange`)를 부릅니다. 화면에 들어 있는 값은 프로젝트 주소와 공개용 키(`sb_publishable_`로 시작)뿐이며, 서버 전용 키는 쓰지 않습니다.
-- SDK 파일은 `npm run build`가 `node_modules`에서 `public/vendor/supabase.js`로 복사합니다. 외부 CDN은 CSP가 막기 때문에 같은 사이트에서 제공하고, 복사본은 Git에 올리지 않습니다(`.gitignore`).
+- (3단계 당시 구조. 5단계에서 서버 함수로 옮겼습니다. 아래 "5단계 저장점" 절) `public/app.js`가 공식 SDK(`signInWithPassword`, `signOut`, `onAuthStateChange`)를 불렀고 화면에 프로젝트 주소와 공개용 키(`sb_publishable_`로 시작)가 들어 있었습니다.
+- (3단계 당시) SDK 파일은 `npm run build`가 `node_modules`에서 `public/vendor/supabase.js`로 복사했습니다. 5단계부터는 SDK를 화면에서 쓰지 않아 복사하지 않고, 남아 있는 복사본은 빌드가 지웁니다.
 - 로그인 실패는 화면에 이유를 보여 줍니다. 계정이 있는지 없는지는 구분해서 알려 주지 않습니다.
 - 로그인하면 계정 이메일과 로그아웃 단추가, 로그아웃하면 이메일·비밀번호 입력창이 보입니다. 화면 상태는 `<body data-auth>`가 `signed-in` 또는 `signed-out`으로 바뀝니다.
 - 시험 계정은 Supabase 대시보드(Authentication > Users)에서 사용자를 직접 만들어 씁니다. 화면에는 회원가입이 없습니다.
@@ -180,7 +180,9 @@
 **지금 작동하는 기능** (실제 배포 주소와 Supabase에서 확인한 것은 괄호에 적었습니다)
 
 - 4단계까지의 기능은 그대로입니다: 로그인·로그아웃, 서버의 로그인 토큰 검사(`401`), 로그인한 사람의 메모 추가·수정·삭제, API의 소유자 검사(남의 메모 `404`, 소유자 변경 시도 `403`), 보안 응답 헤더 네 개, 공개 `/data.json`은 `"notes": []`.
-- **자료 요청은 서버 함수 한 곳으로 모읍니다.** 브라우저 코드(`public/app.js`, `public/index.html`)에는 Supabase 자료를 직접 읽거나 고치는 곳이 없습니다. Supabase 클라이언트는 로그인·로그아웃·로그인 상태 확인(Auth)에만 쓰고, 메모 읽기·추가·수정·삭제는 모두 같은 사이트의 `/api/notes`, `/api/notes/:id`로만 보냅니다(코드 검색으로 확인).
+- **자료 요청은 서버 함수 한 곳으로 모읍니다.** 브라우저 코드(`public/app.js`, `public/index.html`)에는 Supabase 주소도 공개 키도 SDK도 없습니다. 로그인·토큰 갱신·로그아웃은 `POST /api/auth/login`·`/api/auth/refresh`·`/api/auth/logout`(`src/auth-service.mjs`)이 대신 Supabase Auth에 요청하고, 메모 읽기·추가·수정·삭제는 같은 사이트의 `/api/notes`, `/api/notes/:id`로만 보냅니다(코드 검색과 시험으로 확인).
+- **로그인은 서버 함수가 합니다.** 공개 키는 서버 환경변수 `SUPABASE_PUBLISHABLE_KEY`에서만 읽습니다(Vercel에 직접 넣어야 하며 값은 저장소에 두지 않습니다). 비밀번호는 서버가 Supabase에 전달만 하고 저장·기록하지 않습니다. 오래 사는 갱신 토큰은 JavaScript가 읽을 수 없는 쿠키(`byteback_rt`, `HttpOnly`·`Secure`·`SameSite=Strict`, 경로 `/api/auth`)에만 있고, 화면은 짧게 사는 접근 토큰만 이 페이지 메모리에 둡니다(저장소·쿠키에 쓰지 않음). 접근 토큰이 끝나면 화면이 한 번 자동으로 갱신해 다시 시도하고, 새로고침해도 쿠키로 로그인이 이어집니다. 다른 사이트가 보낸 요청(`Origin`이 이 사이트가 아님)은 `403`으로 거부합니다.
+- **요청 횟수 제한(두 겹).** (1) 서버 함수 인스턴스 메모리에서 세는 제한: 메모 API는 같은 IP에서 1분에 300번(로그인 토큰 검사 전), 로그인 쿠키가 없는 갱신 요청도 같은 방식. (2) DB에서 세는 제한(모든 인스턴스가 같은 숫자를 봄, `supabase/003_rate_limits.sql`): 로그인은 같은 IP 10분에 20번·같은 이메일 10분에 8번, 갱신은 IP 10분에 120번, 메모 추가·수정·삭제는 사용자별 1분에 60번. 넘으면 `429 {"error":"RATE_LIMITED"}`와 `Retry-After`를 돌려줍니다. 제한 키는 IP·이메일·사용자 ID를 서버 키로 해시한 값만 DB에 저장합니다. DB 제한이 오류(함수가 아직 없거나 DB 장애)이면 메모리 제한만으로 계속 처리하고 오류 코드만 로그에 남깁니다(요청을 막지 않는 쪽으로 실패). 한도 숫자는 `src/auth-service.mjs`의 `LIMITS`, `src/notes-service.mjs`의 `NOTES_LIMITS`에서 조정합니다.
 - **DB의 직접 권한을 회수했습니다(`vault_notes` 표만).** `PUBLIC`·`anon`·`authenticated`의 권한을 모두 거두고 `service_role`(서버 함수가 서버 전용 설정으로 쓰는 역할)만 남겼습니다. 행 단위 보안은 켜 둔 채 정책 네 개(`authenticated` 대상, `auth.uid() = owner_id`)는 지우지 않고 남겨 두었습니다. 권한이 없는 동안에는 쓰이지 않고, 실수로 권한이 다시 생겨도 본인 행만 허용하는 안전장치가 됩니다(Supabase에서 적용 전후 조회: 적용 전 `authenticated` = SELECT·INSERT·UPDATE·DELETE, 적용 후 `anon`·`authenticated` 모두 권한 없음, 권한표에는 `service_role`만 남음, 열 단위 권한 18개에서 0개, 번호표(시퀀스) 권한은 전후 모두 없음, 행 단위 보안 켜짐 유지, 정책 4개 유지).
 - **원본 자료 API 주소를 기록했습니다.** `aleph.config.json`의 `originalApiUrl`은 쿼리 없는 `https://<프로젝트>.supabase.co/rest/v1/vault_notes`이며, `step`은 5입니다. `identityProvider`와 `allowedRoutes`(다섯 경로)는 4단계와 같고 실제 메서드·경로와 맞습니다. `restoreRoute`는 아직 비어 있습니다. 심판은 배포된 `/aleph.json`에서 이 주소를 읽으므로, 빌드(`scripts/deployment-identity.mjs`)가 5단계부터 `originalApiUrl`을 `/aleph.json`에 함께 기록합니다(쿼리·해시·계정 정보가 있거나 HTTPS가 아니면 빌드가 멈춥니다). 설정 파일에만 적고 이 기록이 빠지면 심판이 `S05_ORIGINAL_URL_MISSING`으로 거절합니다.
 - 공개 키(`anon`)로 원본 경로를 직접 `GET`(쿼리 없이와 `?select=id`)·`PATCH`·`DELETE`·`POST`로 부르면 모두 `401`과 권한 오류 코드 `42501`이고 자료는 내려오지 않습니다(앱 안 브라우저에서 보낸 실제 요청으로 확인. 일치하는 행이 없는 조건으로만 보냈습니다). 화면에서 A 로그인으로 메모 읽기·추가·수정·삭제는 권한 회수 뒤에도 됩니다(사용자 확인).
@@ -188,7 +190,7 @@
 **다시 실행하는 방법**
 
 1. `npm install`을 한 번 실행합니다.
-2. 시험: `npm run test:r5`(7개), `npm run test:package`(3개), `npm run test:notes`(18개), `npm run test:auth`(4개). 모두 통과해야 합니다.
+2. 시험: `npm run test:r5`(8개), `npm run test:package`(3개), `npm run test:notes`(21개), `npm run test:auth`(4개), `npm run test:authapi`(9개), `npm run test:limit`(6개). 모두 통과해야 합니다.
 3. DB의 직접 권한 회수는 Supabase SQL Editor에서 직접 실행했고 **이 SQL 파일은 저장소에 두지 않았습니다.** 다시 만들 때는 아래 두 문장을 한 번에 실행하고, 실행하기 **전에** 먼저 권한을 조회해 기록해 둡니다(전 조회, 변경, 후 조회 순서).
 
 ```sql
@@ -199,9 +201,16 @@ commit;
 ```
 
    조회는 `information_schema.role_table_grants`, `has_table_privilege`(`anon`·`authenticated`·`service_role`), `information_schema.column_privileges`, `pg_policies`로 합니다. 적용 뒤에는 화면에서 A 로그인으로 메모를 읽고 추가·수정·삭제해 서버 함수 경로가 그대로 되는지 봅니다.
-4. 제출 묶음: 변경을 커밋한 뒤 `npm run bundle`을 실행합니다(`bundle-notes.json`과 `artifacts/submission.json`은 커밋하지 않습니다). 5단계부터 `originalApiUrl`(HTTPS)이 없으면 묶음이 만들어지지 않습니다. 직접 점검(`src/attack-check.mjs`)은 배포 주소에 실제로 요청을 보냅니다: 공개 `/data.json`, 로그인 없는 요청 여섯 개(목록 읽기·메모 추가·수정·삭제, 위조·만료 모양·다른 서비스용 모양의 가짜 토큰은 세 개로 따로), **공개 파일에서 찾은 공개 키로 원본 자료 API를 직접 조회·수정**(수정은 일치하는 행이 없는 조건으로만 보내 자료를 바꾸지 않음), **공개 파일 네 개(`/`, `/app.js`, `/vendor/supabase.js`, `/data.json`)에서 서버 전용 키 모양·로그인 토큰 모양·가상 메모 확인 표시 검색**. 결과에는 상태 코드와 찾았는지 여부만 적고 키 값은 적지 않습니다. 서명된 A·B 로그인 토큰이 필요한 "A·B가 서로의 메모에 접근하지 못함"과, 로그인한 시험 계정 토큰으로 원본 API를 직접 부르는 요청은 보내지 않으며 앞의 것은 `미실행`으로 한 항목을 적습니다.
+4. 제출 묶음: 변경을 커밋한 뒤 `npm run bundle`을 실행합니다(`bundle-notes.json`과 `artifacts/submission.json`은 커밋하지 않습니다). 5단계부터 `originalApiUrl`(HTTPS)이 없으면 묶음이 만들어지지 않습니다. 직접 점검(`src/attack-check.mjs`)은 배포 주소에 실제로 요청을 보냅니다: 공개 `/data.json`, 로그인 없는 요청 여섯 개(목록 읽기·메모 추가·수정·삭제, 위조·만료 모양·다른 서비스용 모양의 가짜 토큰은 세 개로 따로), **공개 키로 원본 자료 API를 직접 조회·수정**(공개 키는 화면 파일에 없으므로 점검을 실행하는 창에서 환경변수 `SUPABASE_PUBLISHABLE_KEY`를 줄 때만 보내고, 없으면 `미실행`으로 적습니다. 수정은 일치하는 행이 없는 조건으로만 보내 자료를 바꾸지 않음), **공개 파일 세 개(`/`, `/app.js`, `/data.json`)에서 서버 전용 키 모양·Supabase 공개 키 모양·로그인 토큰 모양·가상 메모 확인 표시 검색**. 결과에는 상태 코드와 찾았는지 여부만 적고 키 값은 적지 않습니다. 서명된 A·B 로그인 토큰이 필요한 "A·B가 서로의 메모에 접근하지 못함"과, 로그인한 시험 계정 토큰으로 원본 API를 직접 부르는 요청은 보내지 않으며 앞의 것은 `미실행`으로 한 항목을 적습니다. 심판은 저장소의 설정 파일이 아니라 배포된 `/aleph.json`을 읽으므로, 빌드가 `originalApiUrl`(5단계부터)과 `allowedRoutes`·`identityProvider`(3단계부터)를 거기에 함께 기록합니다.
 
-**5단계 저장점 당시에 막지 못했던 것·미확인:** 요청 횟수 제한이 없습니다. Supabase 공개 가입 설정은 점검하지 않았습니다. `service_role`에는 Supabase 기본 권한(`TRUNCATE`·`REFERENCES`·`TRIGGER` 포함)이 남아 있고, 서버 키가 새면 DB의 행 단위 보안을 건너뛰어 모든 메모를 읽고 지울 수 있습니다(서버 키는 Vercel 비밀 입력란에만 둡니다). 옛 커밋과 옛 배포에는 이전 자료가 남아 있을 수 있습니다. 심판이 남의 메모 접근에 `404`를 받아들이는지, 심판의 5단계 판정은 확인하지 못했습니다. 화면 위쪽 문구("5단계 로그인 화면", "로그인한 사람만 자기 메모를 볼 수 있습니다")와 안내문은 지금 상태에 맞게 고쳤습니다(`public/index.html`의 글자만 바꿨고 `<style>`은 그대로라 보안 헤더의 해시는 바뀌지 않습니다). `src/decider.mjs`의 `RULE_IDS`는 시작 틀의 `starter.deny` 하나뿐이며 이 단계에서 새 규칙을 만들지 않았습니다.
+**배포 순서(처음 한 번, 이 순서를 지킵니다)**
+
+1. Vercel 프로젝트 설정 → Environment Variables에 `SUPABASE_PUBLISHABLE_KEY`(Supabase 대시보드의 공개 키 `sb_publishable_…`)를 Production에 추가합니다. 이 값이 없으면 로그인이 `500 SERVER_NOT_CONFIGURED`로 실패합니다.
+2. Supabase SQL Editor에서 `supabase/003_rate_limits.sql`을 실행합니다(표와 함수만 새로 만들고 기존 메모 표는 건드리지 않습니다). 실행 전후 확인: `anon`·`authenticated`는 표와 함수를 쓸 수 없고 `service_role`만 쓸 수 있어야 합니다.
+3. 변경을 커밋·Push해서 다시 배포합니다(환경변수는 새 배포부터 적용됩니다).
+4. 확인: 사이트에서 로그인·새로고침·로그아웃, 배포된 `/aleph.json`에 `allowedRoutes`·`originalApiUrl`이 보이는지.
+
+**5단계 저장점 당시에 막지 못했던 것·미확인:** 요청 횟수 제한은 로그인·갱신·메모 쓰기·IP별 요청에 걸었지만, 메모 개수 제한과 계정 잠금(여러 번 틀린 계정의 일시 정지)은 없고 인스턴스 메모리 제한은 인스턴스마다 따로 셉니다. Supabase 공개 가입 설정은 점검하지 않았습니다. 로그인 쿠키 방식은 실제 배포에서의 Safari·모바일 브라우저 동작을 확인하지 못했습니다. `service_role`에는 Supabase 기본 권한(`TRUNCATE`·`REFERENCES`·`TRIGGER` 포함)이 남아 있고, 서버 키가 새면 DB의 행 단위 보안을 건너뛰어 모든 메모를 읽고 지울 수 있습니다(서버 키는 Vercel 비밀 입력란에만 둡니다). 옛 커밋과 옛 배포에는 이전 자료가 남아 있을 수 있습니다. 심판이 남의 메모 접근에 `404`를 받아들이는지, 심판의 5단계 판정은 확인하지 못했습니다. 화면 위쪽 문구("5단계 로그인 화면", "로그인한 사람만 자기 메모를 볼 수 있습니다")와 안내문은 지금 상태에 맞게 고쳤습니다(`public/index.html`의 글자만 바꿨고 `<style>`은 그대로라 보안 헤더의 해시는 바뀌지 않습니다). `src/decider.mjs`의 `RULE_IDS`는 시작 틀의 `starter.deny` 하나뿐이며 이 단계에서 새 규칙을 만들지 않았습니다.
 
 ### 이번 단계 변경 때문에 동작이 깨졌을 때 되돌리는 방법
 

@@ -39,5 +39,20 @@ export function deploymentIdentity(env, config) {
     }
     identity.originalApiUrl = original.href;
   }
+  // 3단계부터 심판이 배포된 /aleph.json에서 로그인 발급자 정보와 허용 경로를 읽습니다(둘 다 공개해도 되는 값).
+  if (config.step >= 3) {
+    const routes = config.allowedRoutes;
+    if (!Array.isArray(routes) || routes.length === 0
+        || !routes.every((route) => typeof route === 'string' && /^(?:GET|POST|PUT|PATCH|DELETE) \/[\w./:-]*$/u.test(route))) {
+      throw new Error('3단계부터는 aleph.config.json의 allowedRoutes에 "METHOD /경로" 형식의 허용 경로가 하나 이상 필요합니다.');
+    }
+    const provider = config.identityProvider;
+    if (!provider || typeof provider.issuer !== 'string' || typeof provider.audience !== 'string'
+        || typeof provider.jwksUrl !== 'string') {
+      throw new Error('3단계부터는 aleph.config.json의 identityProvider(issuer·audience·jwksUrl)가 필요합니다.');
+    }
+    identity.identityProvider = { issuer: provider.issuer, audience: provider.audience, jwksUrl: provider.jwksUrl };
+    identity.allowedRoutes = [...routes];
+  }
   return identity;
 }

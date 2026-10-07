@@ -12,7 +12,9 @@
     "decider:test": "node scripts/decider-test.mjs",
     "detect:test": "node scripts/detect-test.mjs",
     "fixture:7": "node scripts/fixture-7.mjs",
-    "xdr:run": "node scripts/xdr-run.mjs"
+    "xdr:run": "node scripts/xdr-run.mjs",
+    "test:authapi": "node --test test/auth-api.test.mjs",
+    "test:limit": "node --test test/rate-limit.test.mjs"
   },
   "engines": {
     "node": ">=22"

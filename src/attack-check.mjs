@@ -164,13 +164,14 @@ async function runLoginChecks(config, app) {
   return results;
 }
 
-// 5단계: 브라우저가 받는 공개 파일에서 공개 키를 찾아 원본 자료 API를 직접 조회·수정해 보고, 공개 파일에 서버 전용 키가 있는지 찾습니다.
-// 공개 키는 원래 브라우저에 있는 값이지만 결과에는 적지 않습니다. 직접 수정은 일치하는 행이 없는 조건으로만 보내 자료를 바꾸지 않습니다.
+// 5단계: 원본 자료 API를 공개 키로 직접 조회·수정해 보고, 공개 파일에 서버 전용 키와 공개 키가 있는지 찾습니다.
+// 공개 키는 화면 파일에 없어야 하므로(서버 함수에만 둡니다) 직접 요청에 쓸 키는 점검을 실행할 때 환경변수 SUPABASE_PUBLISHABLE_KEY로 줄 때만 보냅니다.
+// 키가 없으면 보내지 않고 미실행으로 적습니다. 키는 결과에 적지 않습니다. 직접 수정은 일치하는 행이 없는 조건으로만 보내 자료를 바꾸지 않습니다.
 // 로그인한 시험 계정의 토큰으로 직접 부르는 요청은 로그인 정보가 필요해 보내지 않습니다.
 const PUBLIC_KEY_PATTERN = /sb_publishable_[A-Za-z0-9_-]{16,}/u;
 const SERVER_KEY_PATTERN = /\bsb_secret_[A-Za-z0-9_-]{12,}/u;
 const TOKEN_PATTERN = /\beyJ[A-Za-z0-9_-]{12,}\.eyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}/u;
-const PUBLIC_FILES = ['/', '/app.js', '/vendor/supabase.js', '/data.json'];
+const PUBLIC_FILES = ['/', '/app.js', '/data.json'];
 
 async function runDirectChecks(config, app) {
   const readExpected = '공개 키로 원본 자료 API를 직접 조회하면 자료 없이 거절됨 (HTTP 401 또는 403)';
@@ -185,10 +186,12 @@ async function runDirectChecks(config, app) {
   } catch {
     // 주소가 없으면 아래에서 미실행으로 적습니다.
   }
-  const key = files.map((file) => PUBLIC_KEY_PATTERN.exec(file.text)?.[0]).find(Boolean);
+  const given = process.env.SUPABASE_PUBLISHABLE_KEY;
+  const key = typeof given === 'string' && PUBLIC_KEY_PATTERN.test(given) ? given.trim()
+    : files.map((file) => PUBLIC_KEY_PATTERN.exec(file.text)?.[0]).find(Boolean);
   const results = [];
   if (!original || !key) {
-    const why = !original ? 'aleph.config.json의 originalApiUrl이 없어' : '공개 파일에서 공개 키를 찾지 못해';
+    const why = !original ? 'aleph.config.json의 originalApiUrl이 없어' : '공개 키가 없어(화면 파일에도 없고 환경변수 SUPABASE_PUBLISHABLE_KEY도 주지 않음)';
     results.push({ attackId: 'direct_data_api_read', expected: readExpected, observed: `미실행: ${why} 보내지 않음` });
     results.push({ attackId: 'direct_data_api_update', expected: updateExpected, observed: `미실행: ${why} 보내지 않음` });
   } else {
@@ -216,14 +219,15 @@ async function runDirectChecks(config, app) {
   const found = [];
   for (const file of readable) {
     if (SERVER_KEY_PATTERN.test(file.text)) found.push(`${file.path}에 서버 전용 키 모양`);
+    if (PUBLIC_KEY_PATTERN.test(file.text)) found.push(`${file.path}에 Supabase 공개 키 모양`);
     if (TOKEN_PATTERN.test(file.text)) found.push(`${file.path}에 로그인 토큰 모양`);
     if (file.text.includes(config.sampleMarker)) found.push(`${file.path}에 가상 메모 확인 표시`);
   }
   let searched;
   if (!readable.length) searched = '공개 파일을 읽지 못해 확인하지 못함';
   else if (found.length) searched = `공개 파일 ${readable.length}개에서 ${found.join(', ')}가 보임. 막지 못한 약점`;
-  else searched = `공개 파일 ${readable.length}개(${readable.map((file) => file.path).join(', ')})에서 서버 전용 키 모양·로그인 토큰 모양·가상 메모 확인 표시가 보이지 않음`;
+  else searched = `공개 파일 ${readable.length}개(${readable.map((file) => file.path).join(', ')})에서 서버 전용 키 모양·Supabase 공개 키 모양·로그인 토큰 모양·가상 메모 확인 표시가 보이지 않음`;
   if (readable.length && readable.length < PUBLIC_FILES.length) searched += ` (읽지 못한 파일 ${PUBLIC_FILES.length - readable.length}개)`;
-  results.push({ attackId: 'static_files_have_no_server_secret', expected: '공개 정적 파일과 브라우저 묶음에서 서버 전용 키·확인 표시가 보이지 않음', observed: searched });
+  results.push({ attackId: 'static_files_have_no_server_secret', expected: '공개 정적 파일과 브라우저 묶음에서 서버 전용 키·공개 키·확인 표시가 보이지 않음', observed: searched });
   return results;
 }

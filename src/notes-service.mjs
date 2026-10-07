@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 import config from '../aleph.config.json' with { type: 'json' };
+import { clientIp, createMemoryLimiter, durableHit, hashKey, tooMany } from './rate-limit.mjs';
 import { createLoginVerifier } from './verify-login.mjs';
 
 // 가상 메모 추가·조회·수정·삭제를 하는 서버 쪽 공통 코드입니다.
@@ -14,6 +15,13 @@ import { createLoginVerifier } from './verify-login.mjs';
 
 export const TITLE_MAX = 120;
 export const BODY_MAX = 5000;
+// 요청 횟수 제한(5단계 보강). 창은 초 단위입니다.
+// - 같은 IP에서 오는 메모 API 요청(로그인 토큰 검사 전): 인스턴스 메모리에서 셉니다. 로그인 없는 폭주를 일찍 끊습니다.
+// - 로그인한 사용자의 쓰기(추가·수정·삭제): 사용자별로 메모리와 DB(rate_limit_hit)에서 셉니다.
+export const NOTES_LIMITS = {
+  ip: { limit: 300, window: 60 },
+  userWrite: { limit: 60, window: 60 },
+};
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const COLUMNS = 'note_id, title, content, owner_id';
 // 본문에 이 이름이 있어도 값으로 쓰지 않습니다. 수정 요청에서 다른 사람 ID가 적혀 있으면 소유자 변경 시도로 보고 거부합니다.
@@ -59,7 +67,7 @@ const defaultCreateDb = (url, key) => createClient(url, key, {
 });
 
 // createDb는 시험에서 가짜 DB를 끼우기 위한 자리입니다. 실제 서버는 기본값(Supabase 공식 SDK)을 씁니다.
-export function createNotesService({ loginConfig = config, verifierOptions = {}, createDb = defaultCreateDb } = {}) {
+export function createNotesService({ loginConfig = config, verifierOptions = {}, createDb = defaultCreateDb, memory = createMemoryLimiter() } = {}) {
   let cached = null;
   function verifierFor(secretKey) {
     if (!cached || cached.secretKey !== secretKey) {
@@ -71,7 +79,7 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
     return cached.verify;
   }
 
-  // 공통 순서: 메서드 → 서버 설정 → 로그인 토큰 → (통과한 뒤에만) 값 검사와 DB.
+  // 공통 순서: 메서드 → 서버 설정 → IP별 횟수 제한 → 로그인 토큰 → (쓰기는) 사용자별 횟수 제한 → (통과한 뒤에만) 값 검사와 DB.
   async function run(request, response, allowed, work) {
     response.setHeader('Cache-Control', 'no-store');
     response.setHeader('Vary', 'Authorization');
@@ -85,6 +93,9 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
       console.error('notes: server settings missing');
       return send(response, 500, { error: 'SERVER_NOT_CONFIGURED' });
     }
+    const ipLimit = memory(`notes:ip:${hashKey(key, 'notes-ip', clientIp(request))}`,
+      NOTES_LIMITS.ip.limit, NOTES_LIMITS.ip.window * 1000);
+    if (!ipLimit.allowed) return tooMany(response, ipLimit.retryAfter);
     let verify;
     try {
       verify = verifierFor(key);
@@ -99,6 +110,16 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
     }
     try {
       const db = createDb(url, key);
+      if (request.method !== 'GET') {
+        const name = hashKey(key, 'notes-write', identity.userId);
+        const rule = NOTES_LIMITS.userWrite;
+        let blocked = memory(`notes:write:${name}`, rule.limit, rule.window * 1000);
+        if (blocked.allowed) {
+          const shared = await durableHit(db, name, rule.limit, rule.window);
+          blocked = shared && !shared.allowed ? shared : null;
+        }
+        if (blocked) return tooMany(response, blocked.retryAfter);
+      }
       return await work({ db, userId: identity.userId });
     } catch {
       console.error('notes: unexpected failure');

@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
 import { SignJWT, exportJWK, generateKeyPair, createLocalJWKSet } from 'jose';
 import config from '../aleph.config.json' with { type: 'json' };
-import { createNotesService } from '../src/notes-service.mjs';
+import { createNotesService, NOTES_LIMITS } from '../src/notes-service.mjs';
+import { createMemoryLimiter } from '../src/rate-limit.mjs';
 
 const FAKE_KEY = 'fake-key-for-test-only';
 const STUDENT = config.identityProvider;
@@ -377,6 +378,10 @@ test('실제 Supabase SDK가 만드는 요청 모양: 모든 요청에 note_id�
   globalThis.fetch = async (input, init = {}) => {
     const request = new Request(input, init);
     requests.push({ method: request.method, url: decodeURIComponent(request.url), body: init.body ? JSON.parse(init.body) : null });
+    // 횟수 제한 함수 호출(rpc)은 아래에서 따로 확인합니다. 가짜로 "허용"을 돌려줍니다.
+    if (request.url.includes('/rest/v1/rpc/rate_limit_hit')) {
+      return new Response(JSON.stringify([{ allowed: true, retry_after: 1 }]), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
     const row = { note_id: A_NOTE, title: 't', content: 'c', owner_id: USER_A };
     const wantsObject = request.headers.get('accept')?.includes('vnd.pgrst.object');
     return new Response(request.method === 'POST' ? null : JSON.stringify(wantsObject ? row : [row]),
@@ -388,7 +393,10 @@ test('실제 Supabase SDK가 만드는 요청 모양: 모든 요청에 note_id�
   await call('handleItem', { headers: asA, url: `/api/notes/${A_NOTE}` }, real);
   await call('handleItem', { method: 'PUT', headers: asA, url: `/api/notes/${A_NOTE}`, body: { title: 'T2', body: 'B2' } }, real);
   await call('handleItem', { method: 'DELETE', headers: asA, url: `/api/notes/${A_NOTE}` }, real);
-  const [listReq, postReq, getReq, putReq, delReq] = requests;
+  const limitCalls = requests.filter((r) => r.url.includes('/rest/v1/rpc/rate_limit_hit'));
+  assert.equal(limitCalls.length, 3, '쓰기 세 번(추가·수정·삭제)만 DB 횟수 제한을 부릅니다');
+  assert.ok(limitCalls.every((r) => r.body.p_limit === 60 && r.body.p_window_seconds === 60 && !JSON.stringify(r.body).includes(USER_A)));
+  const [listReq, postReq, getReq, putReq, delReq] = requests.filter((r) => !r.url.includes('/rest/v1/rpc/'));
   assert.ok(listReq.url.includes(`owner_id=eq.${USER_A}`));
   assert.ok(!listReq.url.includes('is.null'));
   assert.deepEqual(postReq.body, { note_id: A_NOTE_2, owner_id: USER_A, title: 'T', content: 'B' });
@@ -420,6 +428,69 @@ test('aleph.config.json: identityProvider에 비밀이 없고 allowedRoutes가 �
   assert.deepEqual(Object.keys(STUDENT).sort(), ['audience', 'issuer', 'jwksUrl']);
   assert.ok(!/sb_secret_|service_role|eyJ/u.test(JSON.stringify(STUDENT)));
   assert.deepEqual([...config.allowedRoutes].sort(), [
-    'DELETE /api/notes/:id', 'GET /api/notes', 'GET /api/notes/:id', 'POST /api/notes', 'PUT /api/notes/:id',
+    'DELETE /api/notes/:id', 'GET /api/notes', 'GET /api/notes/:id', 'POST /api/auth/login', 'POST /api/auth/logout',
+    'POST /api/auth/refresh', 'POST /api/notes', 'PUT /api/notes/:id',
   ]);
+});
+
+// ---- 요청 횟수 제한(5단계 보강) ----
+test('IP별 제한: 같은 IP가 한도를 넘으면 로그인 토큰 검사 전에 429, 다른 IP는 그대로', async () => {
+  const limited = createNotesService({ verifierOptions: { supabaseClient: fakeSupabase }, createDb: () => makeFakeDb(rows, state) });
+  const headers = { ...asA, 'x-real-ip': '203.0.113.7' };
+  for (let n = 0; n < NOTES_LIMITS.ip.limit; n += 1) {
+    const out = await call('handleCollection', { headers, url: '/api/notes' }, limited);
+    assert.equal(out.status, 200, `요청 ${n + 1}`);
+  }
+  const blocked = await call('handleCollection', { headers: { 'x-real-ip': '203.0.113.7', authorization: 'Bearer not-a-token' }, url: '/api/notes' }, limited);
+  assert.equal(blocked.status, 429, '토큰이 엉망이어도 401이 아니라 429(검사 전에 끊음)');
+  assert.deepEqual(blocked.body, { error: 'RATE_LIMITED' });
+  assert.ok(Number(blocked.headers.get('retry-after')) >= 1);
+  const other = await call('handleCollection', { headers: { ...asA, 'x-real-ip': '203.0.113.8' }, url: '/api/notes' }, limited);
+  assert.equal(other.status, 200);
+  const callsBefore = state.calls;
+  await call('handleItem', { headers, url: `/api/notes/${A_NOTE}` }, limited);
+  assert.equal(state.calls, callsBefore, '막힌 요청은 DB를 부르지 않는다');
+});
+
+test('사용자별 쓰기 제한: 한도를 넘은 추가·수정·삭제는 429이고 DB에 닿지 않으며, 읽기와 다른 사용자는 영향이 없다', async () => {
+  const limited = createNotesService({ verifierOptions: { supabaseClient: fakeSupabase }, createDb: () => makeFakeDb(rows, state),
+    memory: createMemoryLimiter() });
+  const writes = NOTES_LIMITS.userWrite.limit;
+  const headersFor = (token, n) => ({ authorization: `Bearer ${token}`, 'x-real-ip': `198.51.100.${n % 200 + 1}` });
+  for (let n = 0; n < writes; n += 1) {
+    const out = await call('handleCollection', { method: 'POST', headers: headersFor(TOKEN_A, n), url: '/api/notes', body: { title: `t${n}`, body: 'b' } }, limited);
+    assert.equal(out.status, 201, `쓰기 ${n + 1}`);
+  }
+  const count = rows.length;
+  const callsBefore = state.calls;
+  for (const [method, path, handler] of [['POST', '/api/notes', 'handleCollection'], ['PUT', `/api/notes/${A_NOTE}`, 'handleItem'], ['DELETE', `/api/notes/${A_NOTE}`, 'handleItem']]) {
+    const out = await call(handler, { method, headers: headersFor(TOKEN_A, 7), url: path, body: { title: 'x', body: 'y' } }, limited);
+    assert.equal(out.status, 429, method);
+    assert.deepEqual(out.body, { error: 'RATE_LIMITED' });
+  }
+  assert.equal(rows.length, count);
+  assert.ok(rowOf(A_NOTE), '막힌 삭제는 아무것도 지우지 않는다');
+  assert.equal(state.calls, callsBefore);
+  assert.equal((await call('handleCollection', { headers: headersFor(TOKEN_A, 9), url: '/api/notes' }, limited)).status, 200, '읽기는 막지 않음');
+  assert.equal((await call('handleCollection', { method: 'POST', headers: headersFor(TOKEN_B, 11), url: '/api/notes', body: { title: 'b', body: 'b' } }, limited)).status, 201, 'B는 별개');
+});
+
+test('DB 쓰기 제한: 공유 숫자가 한도를 넘었다고 하면 쓰기는 429, 읽기는 DB 제한을 부르지 않고, 키에 사용자 ID가 그대로 들어가지 않는다', async () => {
+  const sent = [];
+  const db = { ...makeFakeDb(rows, state), rpc: async (name, args) => { sent.push({ name, args }); return { data: [{ allowed: false, retry_after: 33 }], error: null }; } };
+  const limited = createNotesService({ verifierOptions: { supabaseClient: fakeSupabase }, createDb: () => db });
+  const read = await call('handleCollection', { headers: asA, url: '/api/notes' }, limited);
+  assert.equal(read.status, 200);
+  assert.equal(sent.length, 0);
+  const blocked = await call('handleCollection', { method: 'POST', headers: asA, url: '/api/notes', body: { title: 'x', body: 'y' } }, limited);
+  assert.equal(blocked.status, 429);
+  assert.equal(blocked.headers.get('retry-after'), '33');
+  assert.equal(rows.some((row) => row.title === 'x'), false);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].name, 'rate_limit_hit');
+  assert.ok(!JSON.stringify(sent).includes(USER_A) && /^[0-9a-f]{40}$/u.test(sent[0].args.p_key));
+  // DB 제한이 고장 나도(함수 없음) 쓰기는 계속 처리합니다.
+  const broken = { ...makeFakeDb(rows, state), rpc: async () => ({ data: null, error: { code: '42883' } }) };
+  const fallback = createNotesService({ verifierOptions: { supabaseClient: fakeSupabase }, createDb: () => broken });
+  assert.equal((await call('handleCollection', { method: 'POST', headers: asA, url: '/api/notes', body: { title: 'ok', body: 'y' } }, fallback)).status, 201);
 });

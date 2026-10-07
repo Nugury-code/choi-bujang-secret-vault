@@ -2,10 +2,7 @@
 // 흐름: 경보에서 다섯 칸을 뽑고(read-alerts.mjs) → patterns.json 의 패턴과 맞춰 보고
 //       → 명확한 공격(block)과 정상(record)은 바로 정하고, 애매한 것만 Jev 에게 확신도를 받습니다.
 // 확신도 0.85 이상 block, 0.5 이상 alert, 그 아래 record. Jev 가 답하지 않으면 alert 입니다.
-// 이 파일은 네트워크를 쓰지 않고 경보 원본을 고치지 않습니다.
-import { readFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
-import { extractAlert } from './read-alerts.mjs';
+// 이 파일은 다른 파일을 읽지 않고 혼자 동작합니다. 네트워크를 쓰지 않고 경보 원본을 고치지 않습니다.
 
 const BLOCK_AT = 0.85;
 const ALERT_AT = 0.5;
@@ -20,23 +17,36 @@ const CLEAR_CONFIDENCE = 0.95;
 // 정상으로 바로 넘기는 기준: 맞는 패턴이 없고 경보 수준이 낮을 때.
 const NORMAL_LEVEL = 4;
 
-const PATTERN_FILE = fileURLToPath(new URL('./patterns.json', import.meta.url));
 const PATTERN_IDS = ['same-address-failure-burst', 'same-password-many-accounts'];
 
-let patternsPromise = null;
-function loadPatterns() {
-  patternsPromise ??= readFile(PATTERN_FILE, 'utf8')
-    .then((text) => {
-      const byId = new Map();
-      for (const pattern of JSON.parse(text).patterns) {
-        if (pattern && typeof pattern.id === 'string' && typeof pattern.name === 'string' && pattern.name.trim()) {
-          byId.set(pattern.id, pattern.name.trim());
-        }
-      }
-      return PATTERN_IDS.every((id) => byId.has(id)) ? byId : null;
-    })
-    .catch(() => null);
-  return patternsPromise;
+// patterns.json 의 이름과 같은 값을 이 파일에 직접 둡니다(다른 파일 없이 혼자 동작하도록).
+const PATTERN_NAMES = new Map([
+  ['same-address-failure-burst', '짧은 시간 같은 주소의 로그인 실패 연속'],
+  ['same-password-many-accounts', '여러 계정에 같은 비밀번호 대입'],
+]);
+
+async function loadPatterns() {
+  return PATTERN_NAMES;
+}
+
+// 경보에서 다섯 칸(시각, 출발 주소, 계정, 규칙 수준, 설명)을 뽑습니다. 원본은 고치지 않습니다.
+function pick(object, key) {
+  return object !== null && typeof object === 'object' && !Array.isArray(object) ? object[key] : undefined;
+}
+function text1(value) {
+  return typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim() : null;
+}
+function extractAlert(alert) {
+  const data = pick(alert, 'data');
+  const rule = pick(alert, 'rule');
+  const level = pick(rule, 'level');
+  return {
+    time: text1(pick(alert, 'timestamp')),
+    srcip: text1(pick(data, 'srcip')),
+    account: text1(pick(data, 'srcuser')),
+    level: typeof level === 'number' && Number.isFinite(level) ? level : null,
+    description: text1(pick(rule, 'description')),
+  };
 }
 
 function toCount(value) {

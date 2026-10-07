@@ -66,12 +66,14 @@ async function runStep2Checks(config, app) {
   if (apiResult.status === null) {
     apiObserved = '요청이 실패해 확인하지 못함';
   } else if (apiResult.status === 200 && Array.isArray(apiResult.body?.notes)) {
-    apiObserved = `로그인 없이 서버 함수가 메모 ${apiResult.body.notes.length}건을 내려 줌 (HTTP 200). 3단계 전까지 남는 공개 약점`;
+    apiObserved = `로그인 없이 서버 함수가 메모 ${apiResult.body.notes.length}건을 내려 줌 (HTTP 200). 토큰 검사가 막지 못한 공개 약점`;
+  } else if (apiResult.status === 401 && !Array.isArray(apiResult.body?.notes)) {
+    apiObserved = '로그인 토큰 없이 서버 함수를 부르면 자료 없이 거절됨 (HTTP 401)';
   } else {
     apiObserved = `로그인 없이 서버 함수 요청이 거절되거나 실패함 (HTTP ${apiResult.status})`;
   }
   return [
     { attackId: 'static_data_has_no_notes', expected: '공개 data.json에 메모와 확인 표시가 없음', observed: staticObserved },
-    { attackId: 'anonymous_api_read', expected: '로그인 없이 서버 함수를 불렀을 때의 결과를 기록 (3단계 전까지 공개 약점)', observed: apiObserved },
+    { attackId: 'anonymous_api_read', expected: '로그인 토큰 없이 서버 함수를 부르면 자료 없이 거절됨 (HTTP 401)', observed: apiObserved },
   ];
 }

@@ -49,8 +49,8 @@
       </div>
       <p id="auth-error" class="error" role="alert" hidden></p>
     </section>
-    <div class="notice">로그인은 신원 확인까지만 붙였습니다. 아래 자료 목록은 아직 로그인과 상관없이 같은 서버 주소에서 읽어 옵니다. 서버가 토큰을 검증하도록 막는 일은 다음 제작에서 붙입니다.</div>
-    <ul id="notes" aria-live="polite"><li>가상 자료를 불러오는 중입니다.</li></ul>
+    <div class="notice">아래 자료는 로그인한 사람에게만 보입니다. 서버가 로그인 토큰을 검사하고, 아직은 로그인한 누구든 모든 가상 자료를 봅니다(내 자료만 보이게 하는 일은 다음 단계).</div>
+    <ul id="notes" aria-live="polite"><li>로그인 상태를 확인하는 중입니다.</li></ul>
   </main>
   <script src="/vendor/supabase.js"></script>
   <script src="/app.js" type="module"></script>

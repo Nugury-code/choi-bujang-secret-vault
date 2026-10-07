@@ -40,6 +40,57 @@ function render(session) {
   signedIn.hidden = !session;
   $('account-email').textContent = email;
   status.textContent = session ? '로그인되어 있습니다.' : '로그인하지 않은 상태입니다.';
+  loadNotes(session?.access_token);
+}
+
+// 자료 목록은 로그인 토큰을 실어 /api/notes에서 읽습니다. 토큰 검사는 서버가 하며,
+// 화면은 userId·role 같은 값을 보내지 않고 SDK가 준 access_token만 보냅니다.
+const list = document.querySelector('#notes');
+let loadId = 0;
+let loadedFor;
+
+function showNotesMessage(message) {
+  const item = document.createElement('li');
+  item.textContent = message;
+  list.replaceChildren(item);
+}
+
+async function loadNotes(token) {
+  if (loadedFor === (token ?? null)) return;
+  loadedFor = token ?? null;
+  const myId = ++loadId;
+  if (!token) {
+    showNotesMessage('로그인하면 자료가 보입니다.');
+    return;
+  }
+  showNotesMessage('가상 자료를 불러오는 중입니다.');
+  try {
+    const response = await fetch('/api/notes', {
+      cache: 'no-store',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (myId !== loadId) return;
+    if (response.status === 401) {
+      loadedFor = undefined;
+      throw new Error('로그인 확인에 실패해 자료를 보여 줄 수 없습니다. 다시 로그인해 주세요.');
+    }
+    if (!response.ok) throw new Error('서버 자료를 읽을 수 없습니다.');
+    const data = await response.json();
+    if (!Array.isArray(data.notes)) throw new Error('자료 형식이 맞지 않습니다.');
+    list.replaceChildren(...data.notes.map((note) => {
+      const item = document.createElement('li');
+      const title = document.createElement('strong');
+      const content = document.createElement('span');
+      title.textContent = note.title;
+      content.textContent = note.content;
+      item.append(title, content);
+      return item;
+    }));
+  } catch (error) {
+    if (myId !== loadId) return;
+    loadedFor = undefined;
+    showNotesMessage(error.message || '서버 자료를 읽을 수 없습니다.');
+  }
 }
 
 function setupAuth() {
@@ -92,27 +143,6 @@ if (window.supabase?.createClient) {
   setupAuth();
 } else {
   status.textContent = '로그인 기능을 불러오지 못했습니다.';
+  loadNotes(null);
   showError('로그인 SDK 파일(/vendor/supabase.js)을 읽지 못했습니다. 다시 배포되었는지 확인해 주세요.');
-}
-
-// 자료 목록은 2단계 그대로 /api/notes에서 읽습니다. 서버 보호는 다음 제작에서 붙입니다.
-const list = document.querySelector('#notes');
-try {
-  const response = await fetch('/api/notes', { cache: 'no-store' });
-  if (!response.ok) throw new Error('서버 자료를 읽을 수 없습니다.');
-  const data = await response.json();
-  if (!Array.isArray(data.notes)) throw new Error('자료 형식이 맞지 않습니다.');
-  list.replaceChildren(...data.notes.map((note) => {
-    const item = document.createElement('li');
-    const title = document.createElement('strong');
-    const content = document.createElement('span');
-    title.textContent = note.title;
-    content.textContent = note.content;
-    item.append(title, content);
-    return item;
-  }));
-} catch (error) {
-  const item = document.createElement('li');
-  item.textContent = error.message;
-  list.replaceChildren(item);
 }

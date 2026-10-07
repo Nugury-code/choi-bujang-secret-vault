@@ -80,6 +80,11 @@ test('step 2 attack check records the static file and the anonymous API without 
     globalThis.fetch = async () => new Response(JSON.stringify({ sampleMarker: 'SAMPLE_NOTE_1', notes: [] }), { status: 200 });
     const [leaked] = await runAttackChecks({ ...config, step: 2 });
     assert.match(leaked.observed, /확인 표시가 보임/u);
+    globalThis.fetch = async (url) => String(url).endsWith('/api/notes')
+      ? new Response(JSON.stringify({ error: 'UNAUTHORIZED' }), { status: 401 })
+      : new Response(JSON.stringify({ notes: [] }), { status: 200 });
+    const [, denied] = await runAttackChecks({ ...config, step: 2 });
+    assert.match(denied.observed, /자료 없이 거절됨 \(HTTP 401\)/u);
     globalThis.fetch = async () => { throw new Error('network'); };
     const [failed] = await runAttackChecks({ ...config, step: 2 });
     assert.match(failed.observed, /확인하지 못함/u);

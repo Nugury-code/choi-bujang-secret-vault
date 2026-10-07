@@ -37,6 +37,16 @@ test('build identity records the step from the config', () => {
   assert.throws(() => deploymentIdentity(env, { ...config, step: 13 }));
 });
 
+test('build identity records originalApiUrl from step 5 only when it is a plain https path', () => {
+  const url = 'https://project.supabase.co/rest/v1/vault_notes';
+  assert.equal('originalApiUrl' in deploymentIdentity(env, { ...config, step: 4, originalApiUrl: url }), false);
+  assert.equal(deploymentIdentity(env, { ...config, step: 5, originalApiUrl: url }).originalApiUrl, url);
+  for (const bad of [null, undefined, '', 'http://project.supabase.co/rest/v1/vault_notes', `${url}?select=*`,
+    `${url}#x`, 'https://user:pw@project.supabase.co/rest/v1/vault_notes', 'not a url']) {
+    assert.throws(() => deploymentIdentity(env, { ...config, step: 5, originalApiUrl: bad }));
+  }
+});
+
 test('first attack check reads public data.json without credentials', async () => {
   const originalFetch = globalThis.fetch;
   let requestUrl;

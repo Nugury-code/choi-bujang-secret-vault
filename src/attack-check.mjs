@@ -65,8 +65,9 @@ async function runStep2Checks(config, app) {
   let apiObserved;
   if (apiResult.status === null) {
     apiObserved = '요청이 실패해 확인하지 못함';
-  } else if (apiResult.status === 200 && Array.isArray(apiResult.body?.notes)) {
-    apiObserved = `로그인 없이 서버 함수가 메모 ${apiResult.body.notes.length}건을 내려 줌 (HTTP 200). 토큰 검사가 막지 못한 공개 약점`;
+  } else if (apiResult.status === 200 && (Array.isArray(apiResult.body) || Array.isArray(apiResult.body?.notes))) {
+    const count = Array.isArray(apiResult.body) ? apiResult.body.length : apiResult.body.notes.length;
+    apiObserved = `로그인 없이 서버 함수가 메모 ${count}건을 내려 줌 (HTTP 200). 토큰 검사가 막지 못한 공개 약점`;
   } else if (apiResult.status === 401 && !Array.isArray(apiResult.body?.notes)) {
     apiObserved = '로그인 토큰 없이 서버 함수를 부르면 자료 없이 거절됨 (HTTP 401)';
   } else {

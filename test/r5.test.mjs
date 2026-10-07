@@ -77,6 +77,12 @@ test('step 2 attack check records the static file and the anonymous API without 
     assert.match(results[0].observed, /메모 0건, 확인 표시 없음/u);
     assert.match(results[1].observed, /메모 1건/u);
     assert.ok(!JSON.stringify(results).includes('SECRET_'));
+    globalThis.fetch = async (url) => String(url).endsWith('/api/notes')
+      ? new Response(JSON.stringify([{ id: 'x', title: 'SECRET_TITLE', body: 'SECRET_BODY' }]), { status: 200 })
+      : new Response(JSON.stringify({ notes: [] }), { status: 200 });
+    const [, openApi] = await runAttackChecks({ ...config, step: 2 });
+    assert.match(openApi.observed, /메모 1건을 내려 줌/u);
+    assert.ok(!JSON.stringify(openApi).includes('SECRET_'));
     globalThis.fetch = async () => new Response(JSON.stringify({ sampleMarker: 'SAMPLE_NOTE_1', notes: [] }), { status: 200 });
     const [leaked] = await runAttackChecks({ ...config, step: 2 });
     assert.match(leaked.observed, /확인 표시가 보임/u);

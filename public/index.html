@@ -36,9 +36,9 @@
 </head>
 <body data-auth="checking">
   <main>
-    <div class="eyebrow">BYTE BACK · 3단계 로그인 화면</div>
+    <div class="eyebrow">BYTE BACK · 5단계 로그인 화면</div>
     <h1>점령된 자료실</h1>
-    <p>지금은 서버 보호가 아직 없는 상태입니다. 아래 기록은 모두 실습을 위해 만든 가상 자료입니다.</p>
+    <p>로그인한 사람만 자기 메모를 볼 수 있습니다. 아래 기록은 모두 실습을 위해 만든 가상 자료입니다.</p>
     <section class="auth" aria-labelledby="auth-title">
       <h2 id="auth-title">로그인</h2>
       <p id="auth-status" role="status">로그인 상태를 확인하는 중입니다.</p>
@@ -66,7 +66,7 @@
       </form>
       <p id="note-error" class="error" role="alert" hidden></p>
     </section>
-    <div class="notice">아래 자료는 로그인한 사람에게만 보이고, 목록에는 내가 추가한 메모와 처음 가상 메모만 나옵니다. 아직 서버가 메모의 주인을 검사하지 않아서, 로그인한 사람이 다른 사람 메모의 번호를 알면 고치거나 지울 수 있습니다(소유자 검사는 4단계).</div>
+    <div class="notice">로그인한 사람의 메모만 나옵니다. 다른 사람의 메모는 보이지도, 고쳐지지도 않습니다.</div>
     <ul id="notes" aria-live="polite"><li>로그인 상태를 확인하는 중입니다.</li></ul>
   </main>
   <script src="/vendor/supabase.js"></script>

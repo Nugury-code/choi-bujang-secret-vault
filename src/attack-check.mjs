@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 // The student changes this check as each stage adds an attack to the same app.
 // Never return tokens, private keys, real names, or note bodies.
 export async function runAttackChecks(config) {
-  if (![1, 2, 3].includes(config.step)) throw new Error('이 단계의 공격 점검을 src/attack-check.mjs에 구현해 주세요.');
+  if (![1, 2, 3, 4].includes(config.step)) throw new Error('이 단계의 공격 점검을 src/attack-check.mjs에 구현해 주세요.');
   let app;
   try {
     app = new URL(config.publicAppUrl);
@@ -15,7 +15,7 @@ export async function runAttackChecks(config) {
     throw new Error('aleph.config.json의 실제 배포 주소를 먼저 넣어 주세요.');
   }
   if (typeof config.sampleMarker !== 'string' || !config.sampleMarker) throw new Error('가상 메모의 확인 표시를 넣어 주세요.');
-  if (config.step === 3) return runStep3Checks(config, app);
+  if (config.step === 3 || config.step === 4) return runLoginChecks(config, app);
   if (config.step === 2) return runStep2Checks(config, app);
   const response = await fetch(new URL('/data.json', app), {
     redirect: 'error', signal: AbortSignal.timeout(10000),
@@ -108,9 +108,10 @@ function fakeToken(config, { audience, expiresInSeconds }) {
   return `${header}.${payload}.${Buffer.alloc(64, 7).toString('base64url')}`;
 }
 
-// 3단계: 로그인 정보 없이 보낼 수 있는 요청이 모두 자료 없이 거절되는지 배포 주소로 실제로 보냅니다.
+// 3·4단계: 로그인 정보 없이 보낼 수 있는 요청이 모두 자료 없이 거절되는지 배포 주소로 실제로 보냅니다.
 // 정상 A 로그인 뒤 요청과 진짜 서명된 만료 토큰은 로그인 정보가 필요해 이 점검에서는 보내지 않습니다(미실행).
-async function runStep3Checks(config, app) {
+// 4단계의 "A와 B가 서로의 메모에 접근하지 못함"도 서명된 두 로그인 토큰이 필요해 보내지 않고 미실행으로 적습니다.
+async function runLoginChecks(config, app) {
   const idp = config.identityProvider ?? {};
   const unknownId = randomUUID();
   const outcome = (what, r, note) => {
@@ -139,6 +140,14 @@ async function runStep3Checks(config, app) {
       attackId: item.attackId,
       expected: `${item.what} 요청이 자료 없이 거절됨 (HTTP 401)`,
       observed: outcome(item.what, response, item.note),
+    });
+  }
+  if (config.step >= 4) {
+    // 서명된 A·B 로그인 토큰 없이는 보낼 수 없습니다. 토큰을 만들거나 저장하지 않으므로 보내지 않았다고 적습니다.
+    results.push({
+      attackId: 'cross_owner_access',
+      expected: 'A·B는 자기 메모만 읽기·추가·수정·삭제하고, 상대 메모 접근과 소유자 변경은 거부됨',
+      observed: '미실행: 서명된 A·B 로그인 토큰이 필요해 이 점검에서는 보내지 않음',
     });
   }
   return results;

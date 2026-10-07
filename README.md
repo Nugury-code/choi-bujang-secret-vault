@@ -63,6 +63,19 @@
 
 **과거 노출은 해소됐다고 쓰지 않습니다.** 옛 공개 커밋은 Git 기록에 그대로 남고, 옛 배포는 배포별 주소에서 계속 열릴 수 있어 옛 `/data.json`을 보여 줄 수 있습니다. 이 기록들이 남아 있는 한 이전에 메모가 공개된 사실은 되돌려지지 않았고, 이번 확인은 최신 파일과 현재 배포에서 메모가 사라졌는지만 확인합니다.
 
+### 3단계 시작: 로그인·로그아웃 화면
+
+화면에 Supabase Auth 이메일·비밀번호 로그인과 로그아웃을 붙였습니다. 비밀번호 확인과 로그인 토큰 발급은 Supabase Auth가 하고, 이 저장소의 코드는 비밀번호나 토큰을 직접 만들거나 저장하지 않습니다.
+
+- `public/app.js`가 공식 SDK(`signInWithPassword`, `signOut`, `onAuthStateChange`)를 부릅니다. 화면에 들어 있는 값은 프로젝트 주소와 공개용 키(`sb_publishable_`로 시작)뿐이며, 서버 전용 키는 쓰지 않습니다.
+- SDK 파일은 `npm run build`가 `node_modules`에서 `public/vendor/supabase.js`로 복사합니다. 외부 CDN은 CSP가 막기 때문에 같은 사이트에서 제공하고, 복사본은 Git에 올리지 않습니다(`.gitignore`).
+- 로그인 실패는 화면에 이유를 보여 줍니다. 계정이 있는지 없는지는 구분해서 알려 주지 않습니다.
+- 로그인하면 계정 이메일과 로그아웃 단추가, 로그아웃하면 이메일·비밀번호 입력창이 보입니다. 화면 상태는 `<body data-auth>`가 `signed-in` 또는 `signed-out`으로 바뀝니다.
+- 시험 계정은 Supabase 대시보드(Authentication > Users)에서 사용자를 직접 만들어 씁니다. 화면에는 회원가입이 없습니다.
+- 시험은 `npm run test:auth`입니다. 화면이 같은 사이트의 파일만 읽는지, CSP의 스타일 해시가 `index.html`과 맞는지, 비밀값이 없는지를 확인합니다. `index.html`의 `<style>`을 고치면 이 시험이 해시 불일치로 실패하니, `vercel.json`의 해시를 다시 계산해 맞춥니다.
+
+**아직 막지 못한 것:** 로그인은 신원 확인까지만 붙였습니다. `/api/notes`는 여전히 로그인 없이 누구나 읽을 수 있고, 서버가 토큰을 검증하는 일은 아직 하지 않았습니다. 화면에서 목록을 숨겨도 서버 보호가 아니므로 이 약점은 그대로 남아 있습니다.
+
 ### 보안 응답 헤더
 
 `vercel.json`의 `headers`가 모든 응답에 아래 네 헤더를 붙입니다. 첫 화면 응답에서 `curl.exe -I https://<배포 주소>/`로 확인합니다.
@@ -70,9 +83,9 @@
 - `X-Content-Type-Options: nosniff`: 브라우저가 파일 종류를 멋대로 추측해 실행하지 못하게 합니다.
 - `X-Frame-Options: DENY`: 다른 사이트가 이 화면을 프레임으로 끼워 넣는 것을 막습니다.
 - `Referrer-Policy: strict-origin-when-cross-origin`: 다른 사이트로 이동할 때 주소 정보가 새는 것을 줄입니다.
-- `Content-Security-Policy`: `public/index.html`의 스크립트와 스타일 각각 하나만 해시로 허용하고, 연결은 같은 사이트(`connect-src 'self'`)만 허용하며, 프레임 삽입을 막습니다.
+- `Content-Security-Policy`: 스크립트는 같은 사이트 파일만(`script-src 'self'`), 스타일은 `index.html`의 `<style>` 하나를 해시로만 허용하고, 연결은 같은 사이트와 Supabase 프로젝트 주소만 허용하며, 프레임 삽입을 막습니다.
 
-**주의:** CSP는 `index.html`의 `<script>`와 `<style>` 안쪽 내용의 해시를 허용합니다. 그 안쪽을 한 글자라도 바꾸면 화면이 나오지 않으므로, 고친 뒤에는 해시를 다시 계산해 `vercel.json`에 맞춰야 합니다. 화면이 비면 `vercel.json`을 직전 커밋으로 되돌립니다.
+**주의:** `index.html`의 `<style>` 안쪽을 한 글자라도 바꾸면 스타일이 적용되지 않으므로, 고친 뒤에는 해시를 다시 계산해 `vercel.json`에 맞춥니다(`npm run test:auth`가 어긋남을 알려 줍니다). 스크립트는 `public/app.js` 파일이라 고쳐도 해시가 필요 없습니다. 화면이 이상하면 `vercel.json`을 직전 커밋으로 되돌립니다.
 
 ### 이번 단계 변경 때문에 동작이 깨졌을 때 되돌리는 방법
 

@@ -1,0 +1,138 @@
+// 보너스 「무차별 로그인 공격」: 경보 하나를 block / alert / record 로 나누는 판단 모듈입니다.
+// 흐름: 경보에서 다섯 칸을 뽑고(read-alerts.mjs) → patterns.json 의 패턴과 맞춰 보고
+//       → 명확한 공격(block)과 정상(record)은 바로 정하고, 애매한 것만 Jev 에게 확신도를 받습니다.
+// 확신도 0.85 이상 block, 0.5 이상 alert, 그 아래 record. Jev 가 답하지 않으면 alert 입니다.
+// 이 파일은 네트워크를 쓰지 않고 경보 원본을 고치지 않습니다.
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { extractAlert } from './read-alerts.mjs';
+
+const BLOCK_AT = 0.85;
+const ALERT_AT = 0.5;
+const JEV_TIMEOUT_MS = 3000;
+
+// 명확한 공격의 기준: 실패 건수 또는 계정 수가 아주 많고, 경보 수준도 높아야 block 합니다(두 신호가 함께 있어야 함).
+const CLEAR_FAILURES = 30;
+const CLEAR_ACCOUNTS = 8;
+const CLEAR_LEVEL = 10;
+const CLEAR_CONFIDENCE = 0.95;
+// 정상으로 바로 넘기는 기준: 맞는 패턴이 없고 경보 수준이 낮을 때.
+const NORMAL_LEVEL = 4;
+
+const PATTERN_FILE = fileURLToPath(new URL('./patterns.json', import.meta.url));
+const PATTERN_IDS = ['same-address-failure-burst', 'same-password-many-accounts'];
+
+let patternsPromise = null;
+function loadPatterns() {
+  patternsPromise ??= readFile(PATTERN_FILE, 'utf8')
+    .then((text) => {
+      const byId = new Map();
+      for (const pattern of JSON.parse(text).patterns) {
+        if (pattern && typeof pattern.id === 'string' && typeof pattern.name === 'string' && pattern.name.trim()) {
+          byId.set(pattern.id, pattern.name.trim());
+        }
+      }
+      return PATTERN_IDS.every((id) => byId.has(id)) ? byId : null;
+    })
+    .catch(() => null);
+  return patternsPromise;
+}
+
+function toCount(value) {
+  const number = typeof value === 'string' && /^\d{1,9}$/.test(value.trim()) ? Number(value) : value;
+  return Number.isSafeInteger(number) && number >= 0 ? number : null;
+}
+
+// 실패 건수와 계정 수. 칸(data.count, data.accounts)을 먼저 보고, 없으면 설명 문장의 숫자를 봅니다.
+function evidenceOf(alert, row) {
+  const data = alert !== null && typeof alert === 'object' && !Array.isArray(alert) ? alert.data : null;
+  const field = data !== null && typeof data === 'object' ? data : {};
+  const text = row.description ?? '';
+
+  let failures = toCount(field.count);
+  if (failures === null) {
+    const found = /(\d{1,9})\s*건/.exec(text);
+    failures = found ? Number(found[1]) : 0;
+  }
+
+  let accounts = 0;
+  if (typeof field.accounts === 'string') {
+    accounts = new Set(field.accounts.split(',').map((name) => name.trim()).filter(Boolean)).size;
+  } else {
+    const found = /계정\s*(\d{1,9})\s*개/.exec(text);
+    accounts = found ? Number(found[1]) : 0;
+  }
+  return { failures, accounts, samePassword: text.includes('같은 비밀번호') };
+}
+
+// 패턴과 맞춰 봅니다. 맞는 패턴의 id 를 돌려주고, 없으면 null.
+function matchPattern({ failures, accounts, samePassword }) {
+  if (accounts >= 5 || (accounts >= 2 && samePassword)) return 'same-password-many-accounts';
+  if (failures >= 3) return 'same-address-failure-burst';
+  if (accounts >= 2) return 'same-password-many-accounts';
+  return null;
+}
+
+function actionFor(confidence) {
+  if (confidence >= BLOCK_AT) return 'block';
+  if (confidence >= ALERT_AT) return 'alert';
+  return 'record';
+}
+
+// Jev: 애매한 경보 하나의 확신도(0~1)를 돌려주는 판단 함수입니다.
+// 실제 Jev 를 연결하게 되면 이 함수만 바꿉니다. 숫자 하나를 돌려주고, 답이 없으면 던지거나 null 을 돌려줍니다.
+async function askJev(row, evidence) {
+  const byFailures = evidence.failures >= 30 ? 1 : evidence.failures >= 10 ? 0.8 : evidence.failures >= 3 ? 0.5 : evidence.failures >= 1 ? 0.2 : 0;
+  const byAccounts = evidence.accounts >= 8 ? 1 : evidence.accounts >= 5 ? 0.85 : evidence.accounts >= 2 ? 0.5 : 0;
+  const level = row.level;
+  const byLevel = level === null ? 0 : level >= 10 ? 1 : level >= 5 ? 0.6 : level === 4 ? 0.3 : 0;
+  return Math.round(((Math.max(byFailures, byAccounts) + byLevel) / 2) * 100) / 100;
+}
+
+// Jev 에게 묻되, 오래 걸리거나 오류가 나거나 0~1 숫자가 아니면 "응답 없음"(null)으로 봅니다.
+async function askWithTimeout(row, evidence) {
+  let timer;
+  try {
+    const answer = await Promise.race([
+      Promise.resolve().then(() => askJev(row, evidence)),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(null), JEV_TIMEOUT_MS); }),
+    ]);
+    return typeof answer === 'number' && Number.isFinite(answer) && answer >= 0 && answer <= 1 ? answer : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function decide(alert) {
+  const patterns = await loadPatterns();
+  if (patterns === null) {
+    return { action: 'alert', confidence: ALERT_AT, reason: '패턴 파일을 읽지 못해 알림으로만 남깁니다' };
+  }
+
+  const row = extractAlert(alert);
+  const evidence = evidenceOf(alert, row);
+  const patternId = matchPattern(evidence);
+  const patternName = patternId === null ? null : patterns.get(patternId);
+  const basis = patternName === null ? '근거 패턴 없음' : `근거 패턴: ${patternName}`;
+  const level = row.level;
+
+  // 명확한 공격: 실패 건수나 계정 수가 매우 많고 경보 수준도 높을 때만 바로 block.
+  const veryMany = evidence.failures >= CLEAR_FAILURES || evidence.accounts >= CLEAR_ACCOUNTS;
+  if (patternName !== null && veryMany && level !== null && level >= CLEAR_LEVEL) {
+    return { action: 'block', confidence: CLEAR_CONFIDENCE, reason: basis };
+  }
+
+  // 정상: 맞는 패턴이 없고 경보 수준이 낮으면 바로 record.
+  if (patternName === null && (level === null || level <= NORMAL_LEVEL)) {
+    return { action: 'record', confidence: 0, reason: basis };
+  }
+
+  // 애매한 경보만 Jev 에게 묻습니다. 응답이 없으면 alert.
+  const confidence = await askWithTimeout(row, evidence);
+  if (confidence === null) {
+    return { action: 'alert', confidence: ALERT_AT, reason: `${basis} (Jev 응답 없음)` };
+  }
+  return { action: actionFor(confidence), confidence, reason: basis };
+}

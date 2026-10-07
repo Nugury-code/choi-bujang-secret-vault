@@ -1,0 +1,24 @@
+{
+  "schema": "aleph.xdr.patterns.v1",
+  "moduleKey": "brute-force",
+  "technique": "T1110",
+  "reference": "https://attack.mitre.org/techniques/T1110/",
+  "patterns": [
+    {
+      "id": "same-address-failure-burst",
+      "name": "짧은 시간 같은 주소의 로그인 실패 연속",
+      "condition": "한 출발 주소(data.srcip)에서 짧은 시간 안에 로그인 실패가 연달아 쌓입니다. 건수는 data.count, 시간 범위와 성공 여부는 rule.description 의 문장에서 읽습니다. 실패 건수와 시간의 수치 기준은 decide 단계에서 정합니다.",
+      "basis": "MITRE ATT&CK T1110.001 비밀번호 추측(Password Guessing): 같은 대상에 반복해서 로그인을 시도하는 무차별 대입입니다."
+    },
+    {
+      "id": "same-password-many-accounts",
+      "name": "여러 계정에 같은 비밀번호 대입",
+      "condition": "한 출발 주소(data.srcip)가 서로 다른 여러 계정에 같은 비밀번호로 실패를 넣습니다. 계정 목록은 data.accounts, 계정 수는 rule.description 의 문장에서 읽습니다. 경보에는 비밀번호 값이 없으므로 같은 비밀번호라는 사실은 rule.description 의 문장으로만 알 수 있습니다.",
+      "basis": "MITRE ATT&CK T1110.003 비밀번호 뿌리기(Password Spraying): 흔한 비밀번호 몇 개를 많은 계정에 하나씩 넣는 무차별 대입입니다."
+    }
+  ],
+  "notIncluded": [
+    "T1110.002 비밀번호 해시 풀기(Password Cracking): 대상 네트워크 밖에서 하는 오프라인 작업이라 로그인 경보에 나타나지 않습니다.",
+    "T1110.004 크리덴셜 스터핑(Credential Stuffing): 이번에 정한 신호 두 가지에 들어 있지 않아 넣지 않았습니다."
+  ]
+}

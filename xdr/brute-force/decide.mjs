@@ -10,9 +10,6 @@ const JEV_TIMEOUT_MS = 3000;
 
 // 명확한 공격의 기준: 규칙 수준이 10 이상(높음)이고, 로그인 실패나 여러 계정 대입의 증거가 함께 있어야 block 합니다.
 const CLEAR_LEVEL = 10;
-// 규칙 수준과 상관없이 로그인 실패가 3건 이상이거나 계정이 5개 이상이면 block 후보로 크게 늘립니다.
-const HEAVY_FAILURES = 3;
-const HEAVY_ACCOUNTS = 5;
 const CLEAR_CONFIDENCE = 0.95;
 // 정상으로 바로 넘기는 기준: 맞는 패턴이 없고 경보 수준이 낮을 때.
 const NORMAL_LEVEL = 4;
@@ -133,8 +130,7 @@ export async function decide(alert) {
   // 증거는 패턴과 맞는 건수·계정 수이거나, 숫자가 없어도 설명이 로그인 실패·여러 계정 대입을 말하는 경우입니다.
   const text = row.description ?? '';
   const manyAccountsWording = /(여러|서로 다른)\s*계정|같은 비밀번호/.test(text);
-  const heavyVolume = evidence.failures >= HEAVY_FAILURES || evidence.accounts >= HEAVY_ACCOUNTS;
-  if ((level !== null && level >= CLEAR_LEVEL && (patternId !== null || text.includes('실패') || manyAccountsWording)) || (patternId !== null && heavyVolume)) {
+  if (level !== null && level >= CLEAR_LEVEL && (patternId !== null || text.includes('실패') || manyAccountsWording)) {
     const clearId = patternId ?? (manyAccountsWording ? PATTERN_IDS[1] : PATTERN_IDS[0]);
     return { action: 'block', confidence: CLEAR_CONFIDENCE, reason: `근거 패턴: ${patterns.get(clearId)}` };
   }

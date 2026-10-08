@@ -17,3 +17,20 @@
 2026-10-07T08:29:41.034Z action=alert alert=bf-17 srcip=192.0.2.52 confidence=0.55 rule=none reason=근거 패턴: 짧은 시간 같은 주소의 로그인 실패 연속
 2026-10-07T08:29:41.034Z action=alert alert=bf-18 srcip=198.51.100.52 confidence=0.55 rule=none reason=근거 패턴: 짧은 시간 같은 주소의 로그인 실패 연속
 2026-10-07T08:29:41.034Z action=alert alert=bf-19 srcip=203.0.113.52 confidence=0.55 rule=none reason=근거 패턴: 짧은 시간 같은 주소의 로그인 실패 연속
+2026-10-08T00:12:25.680Z action=block alert=wi-01 srcip=203.0.113.10 confidence=0.95 expires=2026-10-08T00:42:25.680Z reason=근거 패턴: 요청 인자 안의 SQL 구문
+2026-10-08T00:12:25.680Z action=block alert=wi-02 srcip=203.0.113.10 confidence=0.95 expires=2026-10-08T00:42:25.680Z reason=근거 패턴: 요청 인자 안의 스크립트 태그
+2026-10-08T00:12:25.680Z action=block alert=wi-03 srcip=198.51.100.15 confidence=0.95 expires=2026-10-08T00:42:25.680Z reason=근거 패턴: 경로 거슬러 올라가기(../) 반복
+2026-10-08T00:12:25.680Z action=block alert=wi-04 srcip=192.0.2.15 confidence=0.95 expires=2026-10-08T00:42:25.680Z reason=근거 패턴: 요청 인자 안의 SQL 구문
+2026-10-08T00:12:25.680Z action=block alert=wi-05 srcip=203.0.113.18 confidence=0.95 expires=2026-10-08T00:42:25.680Z reason=근거 패턴: 요청 인자 안의 SQL 구문
+2026-10-08T00:12:25.680Z action=block alert=wi-06 srcip=198.51.100.18 confidence=0.95 expires=2026-10-08T00:42:25.680Z reason=근거 패턴: 요청 인자 안의 명령 구분자
+2026-10-08T00:12:25.680Z action=block alert=wi-07 srcip=192.0.2.21 confidence=0.95 expires=2026-10-08T00:42:25.680Z reason=근거 패턴: 경로 거슬러 올라가기(../) 반복
+2026-10-08T00:12:25.680Z action=block alert=wi-08 srcip=203.0.113.22 confidence=0.95 expires=2026-10-08T00:42:25.680Z reason=근거 패턴: 요청 인자 안의 SQL 구문
+2026-10-08T00:12:25.680Z action=alert alert=wi-09 srcip=192.0.2.40 confidence=0.55 rule=none reason=근거 패턴 없음
+2026-10-08T00:12:25.680Z action=alert alert=wi-10 srcip=198.51.100.40 confidence=0.55 rule=none reason=근거 패턴 없음
+2026-10-08T00:12:25.680Z action=alert alert=wi-11 srcip=203.0.113.41 confidence=0.55 rule=none reason=근거 패턴 없음
+2026-10-08T00:12:25.680Z action=alert alert=wi-12 srcip=192.0.2.41 confidence=0.55 rule=none reason=근거 패턴 없음
+2026-10-08T00:12:25.680Z action=alert alert=wi-13 srcip=198.51.100.41 confidence=0.55 rule=none reason=근거 패턴 없음
+2026-10-08T00:12:25.680Z action=alert alert=wi-14 srcip=203.0.113.42 confidence=0.55 rule=none reason=근거 패턴: 요청 인자 안의 SQL 구문
+2026-10-08T00:12:25.680Z action=alert alert=wi-15 srcip=192.0.2.42 confidence=0.55 rule=none reason=근거 패턴 없음
+2026-10-08T00:12:25.680Z action=alert alert=wi-16 srcip=198.51.100.42 confidence=0.6 rule=none reason=근거 패턴 없음
+2026-10-08T00:12:25.680Z action=alert alert=wi-17 srcip=203.0.113.43 confidence=0.55 rule=none reason=근거 패턴 없음

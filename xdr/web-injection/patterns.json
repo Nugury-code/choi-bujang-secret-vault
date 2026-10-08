@@ -1,0 +1,35 @@
+{
+  "schema": "aleph.xdr.patterns.v1",
+  "moduleKey": "web-injection",
+  "technique": "T1190",
+  "reference": "https://attack.mitre.org/techniques/T1190/",
+  "patterns": [
+    {
+      "id": "sql-syntax-in-request",
+      "name": "요청 인자 안의 SQL 구문",
+      "condition": "요청 주소의 인자(data.url)에 SQL 구문 표기가 섞이고, 같은 주소에서 반복됩니다. 반복 횟수는 data.count, 어떤 표기인지는 rule.description 의 문장에서 읽습니다. 반복 횟수의 수치 기준은 decide 단계에서 정합니다.",
+      "basis": "MITRE ATT&CK T1190 외부 공개 앱 악용: 공개된 웹 서비스의 약점을 노려 처음 들어오는 기법이고, 사례 표에 SQL 주입(예: Havij, sqlmap, APT28)이 들어 있습니다."
+    },
+    {
+      "id": "script-tag-in-request",
+      "name": "요청 인자 안의 스크립트 태그",
+      "condition": "요청 주소의 인자(data.url)에 스크립트 삽입 표기가 섞이고, 같은 주소에서 반복됩니다. 반복 횟수는 data.count, 어떤 표기인지는 rule.description 의 문장에서 읽습니다. 반복 횟수의 수치 기준은 decide 단계에서 정합니다.",
+      "basis": "OWASP 교차 사이트 스크립팅(XSS): 요청으로 보낸 입력을 사이트가 그대로 되돌려 보내면 브라우저가 공격 코드를 실행하는 웹 주입이며, T1190 페이지에는 XSS 가 직접 적혀 있지 않아 같은 외부 공개 앱 악용 범위로 묶은 것입니다."
+    },
+    {
+      "id": "command-separator-in-request",
+      "name": "요청 인자 안의 명령 구분자",
+      "condition": "요청 주소의 인자(data.url)에 명령을 이어 붙이는 구분 표기가 섞이고, 같은 주소의 연속 요청에서 반복됩니다. 반복 횟수는 data.count, 어떤 표기인지는 rule.description 의 문장에서 읽습니다. 반복 횟수의 수치 기준은 decide 단계에서 정합니다.",
+      "basis": "MITRE ATT&CK T1190 사례 표(Cutting Edge)에 명령 주입(command injection)을 통한 공개 장비 악용이 들어 있습니다."
+    },
+    {
+      "id": "path-traversal-repeat",
+      "name": "경로 거슬러 올라가기(../) 반복",
+      "condition": "요청 주소의 인자(data.url)에 상위 폴더로 올라가는 표기(../)가 여러 번 이어집니다. 반복 횟수는 data.count, 표기의 종류는 rule.description 의 문장에서 읽습니다. 반복 횟수의 수치 기준은 decide 단계에서 정합니다.",
+      "basis": "MITRE ATT&CK T1190 사례 표(APT41)에 디렉터리 이탈(directory traversal) 취약점 악용이 있고, OWASP 는 ../ 를 반복해 웹 폴더 밖의 파일에 닿는 공격이라고 설명합니다."
+    }
+  ],
+  "notIncluded": [
+    "새로 생긴 웹 파일(웹셸) 탐지: 요청 경보가 아니라 파일 변화 경보에서 보는 신호라 이 경보 묶음의 칸으로는 확인할 수 없어 넣지 않았습니다."
+  ]
+}

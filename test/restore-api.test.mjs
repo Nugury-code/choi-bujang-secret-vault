@@ -268,19 +268,12 @@ test('쓰기 직전에 사본을 다시 읽어 달라졌으면 아무것도 쓰�
   assert.ok(logged.some((l) => l.includes('backup_changed_before_write')));
 });
 
-test('쓴 뒤 확인이 실패하면 복원한 채 두지 않고 쓰기 전 모습으로 되돌린다(남은 행·삭제된 행)', async () => {
+test('쓴 뒤 읽어 온 모습이 사본과 다르면 성공이라고 하지 않고 502로 알린다(되돌려 쓰지는 않는다)', async () => {
   state.corruptWrites = true;
   Object.assign(live(B_NOTE), { title: '변조됨', content: '변조된 내용' });
-  const tampered = JSON.stringify(live(B_NOTE));
-  const a = await post(B_NOTE, asB);
-  assert.equal(a.status, 502); assert.deepEqual(a.body, { error: 'RESTORE_VERIFY_FAILED' });
-  assert.equal(JSON.stringify(live(B_NOTE)), tampered);
-  tables.vault_notes.splice(tables.vault_notes.indexOf(live(B_NOTE)), 1);
-  state.corruptWrites = true;
-  const b = await post(B_NOTE, asB);
-  assert.equal(b.status, 502);
-  assert.equal(live(B_NOTE), undefined);
+  const out = await post(B_NOTE, asB);
+  assert.equal(out.status, 502); assert.deepEqual(out.body, { error: 'RESTORE_VERIFY_FAILED' });
   assert.deepEqual(live(A_NOTE), original.A);
   assert.deepEqual(live(B_OTHER), original.B2);
-  assert.ok(logged.some((l) => l.includes('restore_verify_failed_undone')));
+  assert.ok(logged.some((l) => l.includes('restore_verify_failed')));
 });

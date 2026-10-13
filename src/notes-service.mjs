@@ -299,11 +299,9 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
       const same = live && live.note_id === id && live.owner_id === userId
         && noteContentSha256(live.title, live.content) === backup.content_sha256;
       if (!same) {
-        // 쓴 뒤 확인이 실패하면 복원한 채로 두지 않고, 쓰기 전 모습(남아 있던 행 또는 없음)으로 되돌립니다.
-        const undo = found
-          ? await db.from('vault_notes').update({ title: current.title, content: current.content }).eq('note_id', id).eq('owner_id', userId)
-          : await db.from('vault_notes').delete().eq('note_id', id).eq('owner_id', userId);
-        return deny(response, 502, { error: 'RESTORE_VERIFY_FAILED' }, undo?.error ? 'restore_verify_failed_undo_failed' : 'restore_verify_failed_undone');
+        // 쓴 값은 위에서 두 번 검증한 사본의 내용입니다. 읽어 온 모습이 사본과 다르면 성공이라고 하지 않고 502로 알리며,
+        // 되돌리기로 변조된 값을 다시 쓰지는 않습니다(원인은 서버 로그의 짧은 이유 한 줄로 확인).
+        return deny(response, 502, { error: 'RESTORE_VERIFY_FAILED' }, 'restore_verify_failed');
       }
       console.log('notes: restored one note');
       return send(response, 200, { id, restored: true, contentSha256: backup.content_sha256, changed: willChange, beforeSha256: currentSha256 });

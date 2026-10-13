@@ -115,7 +115,11 @@ test('B가 변조된 자기 메모 한 건을 복원: 사본과 id·소유자·�
   const before = JSON.stringify([live(A_NOTE), live(B_OTHER), tables.vault_notes_backup]);
   const out = await post(B_NOTE, asB);
   assert.equal(out.status, 200);
-  assert.deepEqual(out.body, { id: B_NOTE, restored: true, contentSha256: backupRow(original.B).content_sha256 });
+  const want = backupRow(original.B).content_sha256;
+  assert.deepEqual(out.body, {
+    id: B_NOTE, restored: true, contentSha256: want, beforeSha256: noteContentSha256('변조됨', '변조된 내용'),
+    changed: { recreate: false, title: true, content: true },
+  });
   const row = live(B_NOTE);
   assert.equal(row.note_id, B_NOTE); assert.equal(row.owner_id, USER_B);
   assert.equal(noteContentSha256(row.title, row.content), tables.vault_notes_backup[0].content_sha256);
@@ -207,4 +211,39 @@ test('DB 오류 응답과 로그에 키·메모 내용·소유자 ID가 없다',
   assert.equal(ok.status, 200);
   assert.ok(!JSON.stringify([ok.body, logged]).includes('B 내용'));
   assert.ok(!JSON.stringify(ok.body).includes(USER_B));
+});
+
+test('dryRun: 아무것도 쓰지 않고 복원할 버전과 바뀔 항목만 보여 주며 원문은 없다', async () => {
+  Object.assign(live(B_NOTE), { content: '변조된 내용' });
+  const before = snapshotOf();
+  const out = await post(B_NOTE, asB, { body: { dryRun: true } });
+  assert.equal(out.status, 200);
+  assert.deepEqual(out.body, {
+    id: B_NOTE, dryRun: true,
+    backup: { contentSha256: backupRow(original.B).content_sha256, backedUpAt: null },
+    current: { exists: true, contentSha256: noteContentSha256(original.B.title, '변조된 내용') },
+    willChange: { recreate: false, title: false, content: true },
+  });
+  assert.equal(snapshotOf(), before);
+  assert.ok(!state.calls.some((call) => call.startsWith('update:') || call.startsWith('insert:') || call.startsWith('delete:')));
+  assert.ok(!JSON.stringify(out.body).includes('변조된 내용'));
+});
+
+test('dryRun: 삭제된 메모는 "다시 만듦"으로 보이고, 사본 검증이 실패하면 미리보기도 멈춘다', async () => {
+  tables.vault_notes.splice(tables.vault_notes.indexOf(live(B_NOTE)), 1);
+  const gone = await post(B_NOTE, asB, { body: { dryRun: true } });
+  assert.deepEqual(gone.body.willChange, { recreate: true, title: true, content: true });
+  assert.deepEqual(gone.body.current, { exists: false, contentSha256: null });
+  assert.equal(tables.vault_notes.length, 2);
+  tables.vault_notes_backup[0].title = '사본 변조';
+  const bad = await post(B_NOTE, asB, { body: { dryRun: true } });
+  assert.equal(bad.status, 409);
+  assert.equal(tables.vault_notes.length, 2);
+});
+
+test('dryRun이 true가 아니면(문자열 "true", 1 등) 실제로 복원한다', async () => {
+  Object.assign(live(B_NOTE), { title: '변조됨' });
+  const out = await post(B_NOTE, asB, { body: { dryRun: 'true' } });
+  assert.equal(out.status, 200); assert.equal(out.body.restored, true);
+  assert.equal(live(B_NOTE).title, original.B.title);
 });

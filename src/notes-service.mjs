@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 import config from '../aleph.config.json' with { type: 'json' };
 import { clientIp, createMemoryLimiter, durableHit, hashKey, tooMany } from './rate-limit.mjs';
+import { expectedCopy, hasPin, pinConflicts, readPin } from './restore-pin.mjs';
 import { createLoginVerifier } from './verify-login.mjs';
 import { resourceIdFor, STUDENT_NOTE } from './resources.mjs';
 
@@ -232,30 +233,58 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
   // - 대상은 주소의 id 하나뿐입니다. 소유자는 확인된 사용자 ID로만 정합니다. 본문(body)에서는 dryRun이 정확히 true인지만 읽습니다
   //   (owner_id·role 같은 값이 와도 무시). dryRun이 true이면 아무것도 쓰지 않고 복원할 버전·바뀔 항목만 돌려줍니다(원문 없음).
   // - 다른 메모와 사본 표는 건드리지 않습니다. 다른 사람 소유 행은 덮어쓰지 않고(오류로 끝남), 사본이 없거나 주인이 다르면 같은 404입니다.
+  // 복구 요청 한 건의 감사 기록(supabase/006_restore_audit.sql). 메모 내용·이메일·토큰은 넣지 않고 요청 본문의 "이름"만 적습니다.
+  // 기록이 실패해도(표가 아직 없거나 DB가 잠깐 안 될 때) 복구 응답은 바꾸지 않고 오류 코드만 로그에 남깁니다.
+  async function recordRestoreAudit(db, row) {
+    try {
+      const { error } = await db.from('restore_audit').insert(row);
+      if (error) console.error('notes: restore audit failed', error.code ?? 'unknown');
+    } catch {
+      console.error('notes: restore audit unavailable');
+    }
+  }
+
   async function handleRestore(request, response) {
     return run(request, response, ['POST'], async ({ db, userId }) => {
       const rawId = restoreIdFromRequest(request);
-      if (!UUID.test(rawId)) return deny(response, 404, { error: 'NOT_FOUND' }, 'bad_id');
+      const body = parseBody(request);
+      const dryRun = body?.dryRun === true;
+      const pin = readPin(body);
+      const agent = typeof request.headers?.['user-agent'] === 'string' ? request.headers['user-agent'].slice(0, 80) : null;
+      // 어떻게 끝났든 한 줄 남기고 같은 응답을 돌려줍니다.
+      const finish = async (outcome, status, body_, reason) => {
+        await recordRestoreAudit(db, {
+          owner_id: userId, note_id: UUID.test(rawId) ? rawId.toLowerCase() : null, outcome, status, dry_run: dryRun,
+          had_pin: hasPin(pin), body_keys: pin.keys, user_agent: agent,
+        });
+        return status >= 400 ? deny(response, status, body_, reason) : send(response, status, body_);
+      };
+      if (!UUID.test(rawId)) return finish('bad_id', 404, { error: 'NOT_FOUND' }, 'bad_id');
       const id = rawId.toLowerCase();
-      const dryRun = parseBody(request)?.dryRun === true;
-      const { data, error } = await db.rpc('restore_one_note', { p_note_id: id, p_owner_id: userId, p_dry_run: dryRun });
+      // 요청에 사본 대조 값이 실려 왔고 주소의 id·확인된 사용자와 어긋나면 DB를 부르기 전에 멈춥니다.
+      if (pinConflicts(pin, { id, userId })) return finish('request_mismatch', 409, { error: 'BACKUP_MISMATCH' }, 'request_mismatch');
+      const { data, error } = await db.rpc('restore_one_note', {
+        p_note_id: id, p_owner_id: userId, p_dry_run: dryRun, p_expected: expectedCopy(pin),
+      });
       if (error) {
         const tag = typeof error.message === 'string' ? error.message.trim() : '';
-        if (tag === 'BACKUP_NOT_FOUND') return deny(response, 404, { error: 'NOT_FOUND' }, 'backup_not_found_or_not_owner');
-        if (tag === 'BACKUP_INTEGRITY_FAILED') return deny(response, 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_hash_mismatch');
-        if (tag === 'RESTORE_VERIFY_FAILED') return deny(response, 502, { error: 'RESTORE_VERIFY_FAILED' }, 'restore_verify_failed');
+        if (tag === 'BACKUP_NOT_FOUND') return finish('not_found', 404, { error: 'NOT_FOUND' }, 'backup_not_found_or_not_owner');
+        if (tag === 'BACKUP_INTEGRITY_FAILED') return finish('backup_integrity', 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_hash_mismatch');
+        if (tag === 'REQUEST_MISMATCH') return finish('request_mismatch', 409, { error: 'BACKUP_MISMATCH' }, 'request_mismatch');
+        if (tag === 'RESTORE_VERIFY_FAILED') return finish('verify_failed', 502, { error: 'RESTORE_VERIFY_FAILED' }, 'restore_verify_failed');
         // 같은 id의 행이 다른 소유자로 있으면 덮어쓰지 않습니다.
-        if (error.code === '23505') return deny(response, 404, { error: 'NOT_FOUND' }, 'restore_owner_conflict');
-        return failed(response, error, 'write');
+        if (error.code === '23505') return finish('owner_conflict', 404, { error: 'NOT_FOUND' }, 'restore_owner_conflict');
+        console.error('notes: write failed', error.code ?? 'unknown');
+        return finish('write_failed', 502, { error: 'NOTES_WRITE_FAILED' }, 'write_failed');
       }
       // 돌아온 값도 한 번 더 봅니다: 같은 id, 해시 모양, 기대한 종류의 응답일 때만 그대로 전달합니다.
       const sha = dryRun ? data?.backup?.contentSha256 : data?.contentSha256;
       const good = data && typeof data === 'object' && data.id === id && typeof sha === 'string' && /^[0-9a-f]{64}$/u.test(sha)
         && (dryRun ? data.dryRun === true : (data.restored === true && data.ownerId === userId));
-      if (!good) return deny(response, 502, { error: 'RESTORE_VERIFY_FAILED' }, 'restore_bad_reply');
+      if (!good) return finish('bad_reply', 502, { error: 'RESTORE_VERIFY_FAILED' }, 'restore_bad_reply');
       console.log(dryRun ? 'notes: restore preview' : 'notes: restored one note');
       // 복구 응답의 최상위는 복구된 한 건의 id·소유자·내용 해시(와 restored 표시)뿐이고, 사본 버전·복구 직전 해시·바뀐 항목은 report 안에 따로 담깁니다. 미리보기는 DB 함수가 준 그대로입니다.
-      return send(response, 200, dryRun ? data : {
+      return finish(dryRun ? 'preview' : 'restored', 200, dryRun ? data : {
         id: data.id, ownerId: data.ownerId, restored: true, contentSha256: data.contentSha256,
         ...(data.report && typeof data.report === 'object' ? { report: data.report } : {}),
       });

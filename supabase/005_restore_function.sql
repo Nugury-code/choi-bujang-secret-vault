@@ -5,7 +5,12 @@
 -- 내용 해시는 서버 코드(src/note-hash.mjs)와 같은 방식입니다: sha256( sha256(제목) 뒤에 sha256(본문) 을 이어 붙인 것 ).
 -- digest 함수가 없다는 오류가 나면 아래 search_path 줄의 extensions를 확인하세요(Supabase는 pgcrypto를 extensions 칸에 둡니다).
 
-create or replace function public.restore_one_note(p_note_id uuid, p_owner_id uuid, p_dry_run boolean default false)
+-- 옛 모양(인자 3개)의 함수가 있으면 지웁니다(같은 이름의 함수가 둘이 되어 헷갈리지 않게).
+drop function if exists public.restore_one_note(uuid, uuid, boolean);
+
+-- p_expected: 요청에 실려 온 "사본 내용 대조 값"({"title": ..., "content": ...} 중 있는 것만). 비어 있으면(null) 대조하지 않습니다.
+-- 이 값은 복원할 내용이 아니라 서버의 검증된 사본과 같은지 확인하는 데만 쓰고, 다르면 아무것도 쓰지 않고 끝냅니다.
+create or replace function public.restore_one_note(p_note_id uuid, p_owner_id uuid, p_dry_run boolean default false, p_expected jsonb default null)
 returns jsonb
 language plpgsql
 security definer
@@ -30,6 +35,16 @@ begin
   if encode(digest(digest(convert_to(b.title, 'UTF8'), 'sha256') || digest(convert_to(b.content, 'UTF8'), 'sha256'), 'sha256'), 'hex')
      is distinct from b.content_sha256 then
     raise exception 'BACKUP_INTEGRITY_FAILED';
+  end if;
+
+  -- 2-2) 요청이 대조해 달라고 보낸 사본 내용이 서버의 검증된 사본과 다르면 아무것도 쓰지 않고 끝냅니다.
+  if p_expected is not null and jsonb_typeof(p_expected) = 'object' then
+    if jsonb_typeof(p_expected->'title') = 'string' and (p_expected->>'title') is distinct from b.title then
+      raise exception 'REQUEST_MISMATCH';
+    end if;
+    if jsonb_typeof(p_expected->'content') = 'string' and (p_expected->>'content') is distinct from b.content then
+      raise exception 'REQUEST_MISMATCH';
+    end if;
   end if;
 
   -- 3) 실행 전 모습: 지금 내 메모가 있는지, 사본과 무엇이 다른지(원문은 돌려주지 않습니다).
@@ -86,12 +101,12 @@ end;
 $$;
 
 -- 브라우저용 역할(anon, authenticated)과 모두(public)에게는 실행 권한을 주지 않습니다. 서버 전용 역할만 부를 수 있습니다.
-revoke all on function public.restore_one_note(uuid, uuid, boolean) from public, anon, authenticated;
-grant execute on function public.restore_one_note(uuid, uuid, boolean) to service_role;
+revoke all on function public.restore_one_note(uuid, uuid, boolean, jsonb) from public, anon, authenticated;
+grant execute on function public.restore_one_note(uuid, uuid, boolean, jsonb) to service_role;
 
 -- 확인용(읽기만 합니다): 함수가 있고, 서버 전용 역할만 실행할 수 있어야 합니다.
 select
-  exists (select 1 from pg_proc where oid = 'public.restore_one_note(uuid, uuid, boolean)'::regprocedure) as function_exists,
-  has_function_privilege('service_role', 'public.restore_one_note(uuid, uuid, boolean)', 'execute') as server_can_run,
-  has_function_privilege('anon', 'public.restore_one_note(uuid, uuid, boolean)', 'execute') as anon_can_run,
-  has_function_privilege('authenticated', 'public.restore_one_note(uuid, uuid, boolean)', 'execute') as authenticated_can_run;
+  exists (select 1 from pg_proc where oid = 'public.restore_one_note(uuid, uuid, boolean, jsonb)'::regprocedure) as function_exists,
+  has_function_privilege('service_role', 'public.restore_one_note(uuid, uuid, boolean, jsonb)', 'execute') as server_can_run,
+  has_function_privilege('anon', 'public.restore_one_note(uuid, uuid, boolean, jsonb)', 'execute') as anon_can_run,
+  has_function_privilege('authenticated', 'public.restore_one_note(uuid, uuid, boolean, jsonb)', 'execute') as authenticated_can_run;

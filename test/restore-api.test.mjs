@@ -3,6 +3,7 @@ import { afterEach, beforeEach, test } from 'node:test';
 import config from '../aleph.config.json' with { type: 'json' };
 import { noteContentSha256 } from '../src/note-hash.mjs';
 import { createNotesService } from '../src/notes-service.mjs';
+import { readPin } from '../src/restore-pin.mjs';
 
 const FAKE_KEY = 'fake-key-for-test-only';
 const STUDENT = config.identityProvider;
@@ -34,7 +35,15 @@ const fakeSupabase = { auth: { async getClaims(token) {
 function makeFakeDb(tables, state) {
   const err = (message, code = 'P0001') => ({ data: null, error: { code, message } });
   return {
-    from() { throw new Error('복구는 rpc 한 번만 불러야 합니다'); },
+    // 감사 기록 표(restore_audit)만 쓸 수 있고, 다른 표를 직접 만지면 시험이 실패합니다.
+    from(name) {
+      if (name !== 'restore_audit') throw new Error('복구는 rpc 한 번과 감사 기록만 써야 합니다');
+      return { insert: async (row) => {
+        if (state.auditFails) return { error: { code: 'PGRST205', message: 'secret ' + FAKE_KEY } };
+        state.audit.push(row);
+        return { error: null };
+      } };
+    },
     rpc(name, args) {
       // 요청 횟수 제한 함수(rate_limit_hit)는 여기서 흉내 내지 않습니다: 없는 함수 오류가 오면 횟수 제한의 DB 부분은 건너뜁니다.
       if (name !== 'restore_one_note') return { data: null, error: { code: 'PGRST202', message: 'not found' } };
@@ -47,6 +56,9 @@ function makeFakeDb(tables, state) {
       const b = tables.vault_notes_backup.find((row) => row.note_id === id && row.owner_id === owner);
       if (!b) return err('BACKUP_NOT_FOUND', 'P0002');
       if (noteContentSha256(b.title, b.content) !== b.content_sha256) return err('BACKUP_INTEGRITY_FAILED');
+      const want = args.p_expected;
+      if (want && typeof want === 'object' && ((typeof want.title === 'string' && want.title !== b.title)
+        || (typeof want.content === 'string' && want.content !== b.content))) return err('REQUEST_MISMATCH');
       const l = tables.vault_notes.find((row) => row.note_id === id && row.owner_id === owner);
       const beforeSha = l ? noteContentSha256(l.title, l.content) : null;
       const will = { recreate: !l, title: !l || l.title !== b.title, content: !l || l.content !== b.content };
@@ -98,7 +110,7 @@ beforeEach(() => {
     vault_notes: [{ ...original.A }, { ...original.B }, { ...original.B2 }],
     vault_notes_backup: [backupRow(original.B)],
   };
-  state = { calls: [], failRpc: false, badReply: false, verifyFails: false, badReplyOwner: false };
+  state = { calls: [], audit: [], auditFails: false, failRpc: false, badReply: false, verifyFails: false, badReplyOwner: false };
   service = createNotesService({ verifierOptions: { supabaseClient: fakeSupabase }, createDb: () => makeFakeDb(tables, state) });
 });
 afterEach(() => {
@@ -192,9 +204,13 @@ test('확인 단계가 틀리면 502로 알리고 메모는 한 글자도 바뀌
   assert.ok(logged.some((l) => l.includes('restore_verify_failed')));
 });
 
-test('본문의 owner_id·role·id·내용은 읽지 않는다', async () => {
+test('본문의 owner_id·id는 대상을 바꾸지 못한다(대조에만 쓰여 어긋나면 멈춤), role·맨 위 title·content는 읽지 않는다', async () => {
   Object.assign(live(B_NOTE), { title: '변조됨' });
-  const out = await post(B_NOTE, asB, { body: { owner_id: USER_A, userId: USER_A, role: 'instructor', id: A_NOTE, title: '끼워 넣기', content: 'x' } });
+  const before = snapshotOf();
+  const spoof = await post(B_NOTE, asB, { body: { owner_id: USER_A, userId: USER_A, id: A_NOTE } });
+  assert.equal(spoof.status, 409); assert.deepEqual(spoof.body, { error: 'BACKUP_MISMATCH' });
+  assert.equal(snapshotOf(), before);
+  const out = await post(B_NOTE, asB, { body: { role: 'instructor', title: '끼워 넣기', content: 'x' } });
   assert.equal(out.status, 200);
   assert.equal(live(B_NOTE).owner_id, USER_B);
   assert.equal(live(B_NOTE).title, original.B.title);
@@ -240,6 +256,68 @@ test('복구 응답의 소유자가 확인된 사용자와 다르면 그대로 �
   const out = await post(B_NOTE, asB);
   assert.equal(out.status, 502); assert.deepEqual(out.body, { error: 'RESTORE_VERIFY_FAILED' });
   assert.ok(logged.some((l) => l.includes('restore_bad_reply')));
+});
+
+test('요청에 실린 사본 내용이 서버의 검증된 사본과 다르면 409로 멈추고 아무것도 쓰지 않는다', async () => {
+  Object.assign(live(B_NOTE), { title: '변조됨', content: '변조된 내용' });
+  const before = snapshotOf();
+  const wrongContent = await post(B_NOTE, asB, { body: { backup: { title: 'B 메모', content: '다른 내용' } } });
+  assert.equal(wrongContent.status, 409); assert.deepEqual(wrongContent.body, { error: 'BACKUP_MISMATCH' });
+  const wrongTitle = await post(B_NOTE, asB, { body: JSON.stringify({ snapshot: { title: '다른 제목' } }) });
+  assert.equal(wrongTitle.status, 409); assert.deepEqual(wrongTitle.body, { error: 'BACKUP_MISMATCH' });
+  assert.equal(snapshotOf(), before);
+  assert.deepEqual(state.audit.map((row) => row.outcome), ['request_mismatch', 'request_mismatch']);
+});
+
+test('요청의 id·소유자가 주소·확인된 사용자와 다르면 DB를 부르지 않고 409로 멈춘다', async () => {
+  const before = snapshotOf();
+  const otherId = await post(B_NOTE, asB, { body: { id: B_OTHER } });
+  const otherOwner = await post(B_NOTE, asB, { body: { backup: { ownerId: USER_A } } });
+  const inconsistent = await post(B_NOTE, asB, { body: { backup: { content: 'x' }, expected: { content: 'y' } } });
+  for (const out of [otherId, otherOwner, inconsistent]) { assert.equal(out.status, 409); assert.deepEqual(out.body, { error: 'BACKUP_MISMATCH' }); }
+  assert.deepEqual(state.calls, []);
+  assert.equal(snapshotOf(), before);
+});
+
+test('대조 값이 사본과 같거나 없거나 모양이 틀렸으면 정상 복원하고, 맨 위의 title·body는 읽지 않는다', async () => {
+  const bodies = [
+    { backup: { id: B_NOTE, ownerId: USER_B, title: 'B 메모', content: 'B 내용' } },
+    { owner: 'B', id: 'not-a-uuid', backup: { owner_id: 7 } },
+    { title: '엉뚱한 제목', body: '엉뚱한 본문' },
+  ];
+  for (const body of bodies) {
+    Object.assign(live(B_NOTE), { title: '변조됨', content: '변조된 내용' });
+    const out = await post(B_NOTE, asB, { body });
+    assert.equal(out.status, 200, JSON.stringify(body)); assert.equal(out.body.restored, true);
+    assert.equal(live(B_NOTE).title, 'B 메모'); assert.equal(live(B_NOTE).content, 'B 내용');
+  }
+});
+
+test('감사 기록: 결과·요청 본문의 이름만 남고 내용·토큰·키는 없으며, 기록이 실패해도 응답은 같다', async () => {
+  Object.assign(live(B_NOTE), { content: '변조된 내용' });
+  const ok = await post(B_NOTE, asB, { body: { dryRun: false, backup: { title: 'B 메모' } }, headers: { ...asB, 'user-agent': 'probe/1.0' } });
+  assert.equal(ok.status, 200);
+  const miss = await post(B_OTHER, asB);
+  assert.equal(miss.status, 404);
+  assert.deepEqual(state.audit.map((row) => [row.outcome, row.status]), [['restored', 200], ['not_found', 404]]);
+  assert.deepEqual(state.audit[0].body_keys, ['dryRun', 'backup', 'backup.title']);
+  assert.equal(state.audit[0].had_pin, true); assert.equal(state.audit[0].user_agent, 'probe/1.0');
+  assert.equal(state.audit[0].owner_id, USER_B); assert.equal(state.audit[0].note_id, B_NOTE);
+  const text = JSON.stringify([state.audit, logged]);
+  for (const forbidden of [FAKE_KEY, 'B 내용', '변조된 내용', TOKEN_B]) assert.ok(!text.includes(forbidden), forbidden);
+  state.auditFails = true; Object.assign(live(B_NOTE), { content: '또 변조' });
+  const again = await post(B_NOTE, asB);
+  assert.equal(again.status, 200); assert.equal(live(B_NOTE).content, 'B 내용');
+  assert.ok(logged.some((l) => l.includes('restore audit failed')));
+  assert.ok(!logged.join('\n').includes(FAKE_KEY));
+});
+
+test('요청 본문 읽기(readPin): 이름은 정해진 것만, 모양 틀린 값은 무시, 맨 위 title·body는 안 읽음', () => {
+  assert.deepEqual(readPin(null).ids, []);
+  const pin = readPin({ id: B_NOTE.toUpperCase(), owner: USER_B, title: '위', body: '위', backup: { title: '사본', text: '내용' }, x: { title: '무시' } });
+  assert.deepEqual(pin.ids, [B_NOTE]); assert.deepEqual(pin.owners, [USER_B]);
+  assert.equal(pin.title, '사본'); assert.equal(pin.content, '내용');
+  assert.deepEqual(pin.keys, ['id', 'owner', 'title', 'body', 'backup', 'x', 'backup.title', 'backup.text']);
 });
 
 test('dryRun: 아무것도 쓰지 않고 복원할 버전과 바뀔 항목만 보여 주며 원문은 없다', async () => {

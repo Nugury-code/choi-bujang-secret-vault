@@ -254,8 +254,11 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
         && (dryRun ? data.dryRun === true : (data.restored === true && data.ownerId === userId));
       if (!good) return deny(response, 502, { error: 'RESTORE_VERIFY_FAILED' }, 'restore_bad_reply');
       console.log(dryRun ? 'notes: restore preview' : 'notes: restored one note');
-      // 복구 응답은 복구된 한 건의 id·소유자·내용 해시(와 restored 표시)만 돌려줍니다. 미리보기는 DB 함수가 준 그대로입니다.
-      return send(response, 200, dryRun ? data : { id: data.id, ownerId: data.ownerId, restored: true, contentSha256: data.contentSha256 });
+      // 복구 응답의 최상위는 복구된 한 건의 id·소유자·내용 해시(와 restored 표시)뿐이고, 사본 버전·복구 직전 해시·바뀐 항목은 report 안에 따로 담깁니다. 미리보기는 DB 함수가 준 그대로입니다.
+      return send(response, 200, dryRun ? data : {
+        id: data.id, ownerId: data.ownerId, restored: true, contentSha256: data.contentSha256,
+        ...(data.report && typeof data.report === 'object' ? { report: data.report } : {}),
+      });
     });
   }
 

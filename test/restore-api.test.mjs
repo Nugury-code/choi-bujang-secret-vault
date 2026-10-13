@@ -58,7 +58,8 @@ function makeFakeDb(tables, state) {
       if (state.verifyFails) return err('RESTORE_VERIFY_FAILED');
       if (l) Object.assign(l, { title: b.title, content: b.content });
       else tables.vault_notes.push({ note_id: id, owner_id: owner, title: b.title, content: b.content });
-      return { data: { id, ownerId: owner, restored: true, contentSha256: b.content_sha256 }, error: null };
+      return { data: { id, ownerId: owner, restored: true, contentSha256: b.content_sha256,
+        report: { backupVersion: { contentSha256: b.content_sha256, backedUpAt: null }, before: { exists: Boolean(l), contentSha256: beforeSha }, changed: will } }, error: null };
     },
   };
 }
@@ -120,7 +121,14 @@ test('B가 변조된 자기 메모 한 건을 복원: 사본과 id·소유자·�
   const want = backupRow(original.B).content_sha256;
   assert.deepEqual(out.body, {
     id: B_NOTE, ownerId: USER_B, restored: true, contentSha256: want,
+    report: {
+      backupVersion: { contentSha256: want, backedUpAt: null },
+      before: { exists: true, contentSha256: noteContentSha256('변조됨', '변조된 내용') },
+      changed: { recreate: false, title: true, content: true },
+    },
   });
+  assert.deepEqual(Object.keys(out.body).sort(), ['contentSha256', 'id', 'ownerId', 'report', 'restored']);
+  assert.ok(!JSON.stringify(out.body).includes('변조된 내용'));
   const row = live(B_NOTE);
   assert.equal(row.note_id, B_NOTE); assert.equal(row.owner_id, USER_B);
   assert.equal(noteContentSha256(row.title, row.content), tables.vault_notes_backup[0].content_sha256);

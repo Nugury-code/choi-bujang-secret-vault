@@ -494,3 +494,38 @@ test('DB 쓰기 제한: 공유 숫자가 한도를 넘었다고 하면 쓰기는
   const fallback = createNotesService({ verifierOptions: { supabaseClient: fakeSupabase }, createDb: () => broken });
   assert.equal((await call('handleCollection', { method: 'POST', headers: asA, url: '/api/notes', body: { title: 'ok', body: 'y' } }, fallback)).status, 201);
 });
+
+// ---- 8단계: 메뉴를 우회한 직접 API 요청, role 불신, 거부 사유 로그 ----
+test('8단계: 본문·헤더의 role이 강사여도 남의 메모는 읽기·수정·삭제가 모두 404이고 B의 메모는 그대로다', async () => {
+  const extra = { 'x-role': 'instructor', 'x-user-id': USER_B };
+  const before = JSON.stringify(rowOf(B_NOTE));
+  const read = await item(B_NOTE, 'GET', { ...asA, ...extra });
+  const edit = await item(B_NOTE, 'PUT', { ...asA, ...extra }, { body: { title: 'x', body: 'y', role: 'instructor' } });
+  const del = await item(B_NOTE, 'DELETE', { ...asA, ...extra });
+  assert.deepEqual([read.status, edit.status, del.status], [404, 404, 404]);
+  assert.equal(JSON.stringify(rowOf(B_NOTE)), before);
+  assert.ok(!JSON.stringify([read.body, edit.body, del.body]).includes('B 내용'));
+});
+
+test('8단계: 목록에는 role·owner를 보내도 내 메모만 나온다', async () => {
+  const result = await call('handleCollection', { headers: { ...asB, 'x-role': 'instructor' }, url: '/api/notes?role=instructor&owner_id=' + USER_A });
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body.map((note) => note.id), [B_NOTE]);
+});
+
+test('8단계: 강사 공지 주소로 메모 코드를 직접 불러도 404이고 DB를 부르지 않는다', async () => {
+  const result = await call('handleCollection', { headers: asA, url: '/api/notices' });
+  const one = await call('handleItem', { method: 'PUT', headers: asA, url: '/api/notices/abc', body: { title: 't', body: 'b' } });
+  assert.deepEqual([result.status, one.status], [404, 404]);
+  assert.equal(state.calls, 0);
+});
+
+test('8단계: 거부 사유는 짧은 이름만 로그에 남고 ID·토큰·메모 내용은 없다', async () => {
+  await item(B_NOTE, 'GET', asA);
+  await item('not-a-uuid', 'GET', asA);
+  await item(B_NOTE, 'PUT', asA, { body: { title: 't', body: 'b', owner_id: USER_B } });
+  await call('handleCollection', { headers: asA, url: '/api/notices' });
+  const text = logged.join('\n');
+  for (const reason of ['not_owner_or_missing', 'bad_id', 'owner_change', 'other_resource']) assert.ok(text.includes(`notes: denied ${reason}`), reason);
+  for (const secret of [USER_A, USER_B, B_NOTE, TOKEN_A, TOKEN_B, 'B 내용', FAKE_KEY]) assert.ok(!text.includes(secret));
+});

@@ -3,7 +3,8 @@
 // 요청 본문의 userId, role, 기기 키, 토큰을 별도로 믿거나 저장하지 마세요.
 // 이 파일은 다른 파일을 읽지 않고 혼자 동작합니다.
 // 7단계: readSignals가 가상 접속 정보의 출처와 값을 검사하고, step_up_required 규칙이 그 결과를 씁니다.
-export const RULE_IDS = Object.freeze(['starter.deny', 'device_registered', 'step_up_required']);
+// 8단계: zone_rules가 자원(메모, 강사 공지)과 동작을 정확한 경로로 가립니다.
+export const RULE_IDS = Object.freeze(['starter.deny', 'device_registered', 'step_up_required', 'zone_rules']);
 
 function respond(request, decision, reasonCode, ruleId) {
   return {
@@ -53,13 +54,50 @@ function recentlyVerified(request) {
   const s = request?.stepUp;
   return s?.verified === true && Number.isInteger(s.authAgeSeconds) && s.authAgeSeconds >= 0 && s.authAgeSeconds <= 900;
 }
+// 8단계 구역 규칙(zone_rules): 엔진이 확인한 method와 route(정확한 경로)로만 자원과 동작을 고릅니다.
+// - 쿼리(queryLength, querySha256)는 기능을 고르는 데 쓰지 않습니다. 고르는 것은 자료 ID(경로의 :id)뿐입니다.
+// - 표에 없는 method·route 조합과 경로 모양이 맞지 않는 요청은 모르는 경로로 보고 거부합니다.
+// - :id와 같은 깊이에는 기능 경로(export 같은 이름)를 두지 않고, 그런 이름이 자료 ID 자리에 오면 거부합니다.
+// - 강사 공지(instructor.notice) 수정은 계약에 강사 역할 값이 없어서(request.role 없음) 누구에게도 허용하지 않습니다.
+// - 요청에는 메모의 주인 정보가 없어서 "자기 메모인지"는 여기서 가릴 수 없습니다. 그 검사는 최종 자료 API(소유자 검사, 남의 메모 404)가 합니다.
+const ZONE_ROUTES = Object.freeze({
+  'GET /notes': { resource: 'student.note', action: 'read' },
+  'GET /notes/:id': { resource: 'student.note', action: 'read' },
+  'PUT /notes/:id': { resource: 'student.note', action: 'update' },
+  'GET /api/notes': { resource: 'student.note', action: 'read' },
+  'GET /api/notes/:id': { resource: 'student.note', action: 'read' },
+  'PUT /api/notes/:id': { resource: 'student.note', action: 'update' },
+  'PUT /notices/:id': { resource: 'instructor.notice', action: 'update' },
+  'PUT /api/notices/:id': { resource: 'instructor.notice', action: 'update' },
+});
+const RESERVED_IDS = Object.freeze(['export', 'import', 'search', 'list', 'all', 'new', 'admin', 'bulk', 'download']);
+const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u;
+function zoneOf(request) {
+  const { method, route, path } = request ?? {};
+  if (typeof method !== 'string' || typeof route !== 'string' || typeof path !== 'string') return null;
+  if (!Object.hasOwn(ZONE_ROUTES, route) || !route.startsWith(`${method} `)) return null;
+  if (path.includes('?') || path.includes('#') || !path.startsWith('/')) return null;
+  const want = route.slice(method.length + 1).split('/').filter(Boolean);
+  const got = path.split('/').filter(Boolean);
+  if (want.length !== got.length) return null;
+  for (let i = 0; i < want.length; i += 1) {
+    if (want[i] === ':id') {
+      if (!ID_PATTERN.test(got[i]) || RESERVED_IDS.includes(got[i].toLowerCase())) return null;
+    } else if (want[i] !== got[i]) return null;
+  }
+  return ZONE_ROUTES[route];
+}
 export async function decide(request) {
   if (request?.deviceRegistered !== true) return respond(request, 'deny', 'device_not_registered', 'device_registered');
+  const zone = zoneOf(request);
+  if (zone === null) return respond(request, 'deny', 'unknown_route', 'zone_rules');
+  if (zone.resource !== 'student.note') return respond(request, 'deny', 'forbidden_resource', 'zone_rules');
   if (request.method === 'GET') {
     if (isUnusualAccess(request) && !recentlyVerified(request)) {
       return respond(request, 'step_up', 'step_up_required', 'step_up_required');
     }
-    return respond(request, 'allow', 'approved', 'device_registered');
+    return respond(request, 'allow', 'approved', 'zone_rules');
   }
+  if (zone.action === 'update') return respond(request, 'allow', 'approved', 'zone_rules');
   return respond(request, 'deny', 'starter_not_ready', RULE_IDS[0]);
 }

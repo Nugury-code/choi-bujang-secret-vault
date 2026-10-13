@@ -47,11 +47,13 @@ function makeFakeDb(tables, state) {
       const out = (list) => ({ data: this.single ? (list[0] ? { ...list[0] } : null) : list.map((row) => ({ ...row })), error: null });
       if (this.op === 'insert') {
         if (rows.some((row) => row.note_id === this.values.note_id)) return { data: null, error: { code: '23505' } };
-        if (!state.dropWrites) rows.push({ ...this.values });
+        if (!state.dropWrites) rows.push({ ...this.values, ...(state.corruptWrites ? { content: `${this.values.content}!` } : {}) });
+        state.corruptWrites = false;
         return { data: null, error: null };
       }
       if (this.op === 'update') {
-        if (!state.dropWrites) for (const row of matched) Object.assign(row, this.values);
+        if (!state.dropWrites) for (const row of matched) Object.assign(row, this.values, state.corruptWrites ? { content: `${this.values.content}!` } : {});
+        if (matched.length) state.corruptWrites = false;
         return out(matched);
       }
       if (this.op === 'delete') { for (const row of matched) rows.splice(rows.indexOf(row), 1); return out(matched); }
@@ -246,4 +248,39 @@ test('dryRun이 true가 아니면(문자열 "true", 1 등) 실제로 복원한�
   const out = await post(B_NOTE, asB, { body: { dryRun: 'true' } });
   assert.equal(out.status, 200); assert.equal(out.body.restored, true);
   assert.equal(live(B_NOTE).title, original.B.title);
+});
+
+test('쓰기 직전에 사본을 다시 읽어 달라졌으면 아무것도 쓰지 않고 409로 멈춘다', async () => {
+  Object.assign(live(B_NOTE), { title: '변조됨' });
+  let reads = 0;
+  const db = makeFakeDb(tables, state);
+  const realFrom = db.from;
+  db.from = (table) => {
+    if (table === 'vault_notes_backup' && ++reads === 2) tables.vault_notes_backup[0].content = '두 번째 읽기 전에 바뀐 사본';
+    return realFrom(table);
+  };
+  service = createNotesService({ verifierOptions: { supabaseClient: fakeSupabase }, createDb: () => db });
+  const live0 = JSON.stringify(live(B_NOTE));
+  const out = await post(B_NOTE, asB);
+  assert.equal(out.status, 409); assert.deepEqual(out.body, { error: 'BACKUP_INTEGRITY_FAILED' });
+  assert.equal(JSON.stringify(live(B_NOTE)), live0);
+  assert.ok(!state.calls.some((call) => call.startsWith('update:vault_notes:') ) );
+  assert.ok(logged.some((l) => l.includes('backup_changed_before_write')));
+});
+
+test('쓴 뒤 확인이 실패하면 복원한 채 두지 않고 쓰기 전 모습으로 되돌린다(남은 행·삭제된 행)', async () => {
+  state.corruptWrites = true;
+  Object.assign(live(B_NOTE), { title: '변조됨', content: '변조된 내용' });
+  const tampered = JSON.stringify(live(B_NOTE));
+  const a = await post(B_NOTE, asB);
+  assert.equal(a.status, 502); assert.deepEqual(a.body, { error: 'RESTORE_VERIFY_FAILED' });
+  assert.equal(JSON.stringify(live(B_NOTE)), tampered);
+  tables.vault_notes.splice(tables.vault_notes.indexOf(live(B_NOTE)), 1);
+  state.corruptWrites = true;
+  const b = await post(B_NOTE, asB);
+  assert.equal(b.status, 502);
+  assert.equal(live(B_NOTE), undefined);
+  assert.deepEqual(live(A_NOTE), original.A);
+  assert.deepEqual(live(B_OTHER), original.B2);
+  assert.ok(logged.some((l) => l.includes('restore_verify_failed_undone')));
 });

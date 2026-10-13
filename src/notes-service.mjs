@@ -249,7 +249,6 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
       if (wanted === null || wanted !== backup.content_sha256) {
         return deny(response, 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_hash_mismatch');
       }
-      const fields = { title: backup.title, content: backup.content };
       // 실행 전 모습: 지금 내 메모가 있는지, 사본과 무엇이 다른지 읽기만 합니다.
       const { data: current, error: currentError } = await db.from('vault_notes').select(COLUMNS)
         .eq('note_id', id).eq('owner_id', userId).maybeSingle();
@@ -270,6 +269,16 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
           willChange,
         });
       }
+      // 쓰기 직전에 사본을 한 번 더 읽어 처음 검증한 것과 같은지, 해시가 아직 맞는지 확인합니다. 다르면 아무것도 쓰지 않고 멈춥니다.
+      const { data: reread, error: rereadError } = await db.from('vault_notes_backup').select(BACKUP_COLUMNS)
+        .eq('note_id', id).eq('owner_id', userId).maybeSingle();
+      if (rereadError) return failed(response, rereadError, 'read');
+      if (!reread || reread.note_id !== id || reread.owner_id !== userId
+          || reread.content_sha256 !== backup.content_sha256
+          || noteContentSha256(reread.title, reread.content) !== reread.content_sha256) {
+        return deny(response, 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_changed_before_write');
+      }
+      const fields = { title: reread.title, content: reread.content };
       // 내 메모가 남아 있으면(변조) 그 한 행을 사본 내용으로 되돌리고, 없으면(삭제) 같은 id로 다시 만듭니다.
       const { data: updated, error: updateError } = await db.from('vault_notes').update(fields)
         .eq('note_id', id).eq('owner_id', userId).select(COLUMNS).maybeSingle();
@@ -289,7 +298,13 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
       }
       const same = live && live.note_id === id && live.owner_id === userId
         && noteContentSha256(live.title, live.content) === backup.content_sha256;
-      if (!same) return deny(response, 502, { error: 'RESTORE_VERIFY_FAILED' }, 'restore_verify_failed');
+      if (!same) {
+        // 쓴 뒤 확인이 실패하면 복원한 채로 두지 않고, 쓰기 전 모습(남아 있던 행 또는 없음)으로 되돌립니다.
+        const undo = found
+          ? await db.from('vault_notes').update({ title: current.title, content: current.content }).eq('note_id', id).eq('owner_id', userId)
+          : await db.from('vault_notes').delete().eq('note_id', id).eq('owner_id', userId);
+        return deny(response, 502, { error: 'RESTORE_VERIFY_FAILED' }, undo?.error ? 'restore_verify_failed_undo_failed' : 'restore_verify_failed_undone');
+      }
       console.log('notes: restored one note');
       return send(response, 200, { id, restored: true, contentSha256: backup.content_sha256, changed: willChange, beforeSha256: currentSha256 });
     });

@@ -248,15 +248,18 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
         return deny(response, 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_hash_mismatch');
       }
       const fields = { title: backup.title, content: backup.content };
-      // 사본은 위에서 "내 것"으로 확인됐습니다. 같은 note_id의 행이 남아 있으면 소유자가 바뀌어 있어도(변조)
-      // 그 한 행을 사본의 제목·본문·소유자로 되돌리고, 없으면(삭제) 같은 id로 다시 만듭니다.
-      const { data: updated, error: updateError } = await db.from('vault_notes').update({ ...fields, owner_id: userId })
-        .eq('note_id', id).select(COLUMNS).maybeSingle();
+      // 내 메모가 남아 있으면(변조) 그 한 행을 사본 내용으로 되돌리고, 없으면(삭제) 같은 id로 다시 만듭니다.
+      const { data: updated, error: updateError } = await db.from('vault_notes').update(fields)
+        .eq('note_id', id).eq('owner_id', userId).select(COLUMNS).maybeSingle();
       if (updateError) return failed(response, updateError, 'write');
       let live = updated;
       if (!live) {
         const { error: insertError } = await db.from('vault_notes').insert({ note_id: id, owner_id: userId, ...fields });
-        if (insertError) return failed(response, insertError, 'write');
+        if (insertError) {
+          // 같은 id의 행이 다른 소유자로 있으면 덮어쓰지 않습니다.
+          if (insertError.code === '23505') return missing('restore_owner_conflict');
+          return failed(response, insertError, 'write');
+        }
         const { data: again, error: readError } = await db.from('vault_notes').select(COLUMNS)
           .eq('note_id', id).eq('owner_id', userId).maybeSingle();
         if (readError) return failed(response, readError, 'read');

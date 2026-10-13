@@ -160,15 +160,13 @@ test('사본의 내용 해시가 맞지 않으면 409로 멈추고 아무것도 
   assert.ok(logged.some((l) => l.includes('backup_hash_mismatch')));
 });
 
-test('소유자가 바뀐 변조 행도 사본의 소유자·내용으로 되돌린다', async () => {
-  Object.assign(live(B_NOTE), { owner_id: USER_A, title: '변조됨', content: '변조됨' });
+test('같은 id의 행이 다른 소유자로 있으면 덮어쓰지 않는다', async () => {
+  live(B_NOTE).owner_id = USER_A;
+  const before = snapshotOf();
   const out = await post(B_NOTE, asB);
-  assert.equal(out.status, 200);
-  assert.equal(live(B_NOTE).owner_id, USER_B);
-  assert.equal(live(B_NOTE).title, 'B 메모');
-  assert.equal(live(B_NOTE).content, 'B 내용');
-  assert.deepEqual(live(A_NOTE), original.A);
-  assert.deepEqual(live(B_OTHER), original.B2);
+  assert.equal(out.status, 404);
+  assert.equal(snapshotOf(), before);
+  assert.ok(logged.some((l) => l.includes('restore_owner_conflict')));
 });
 
 test('본문의 owner_id·role·id·내용은 읽지 않는다', async () => {

@@ -1,0 +1,210 @@
+import assert from 'node:assert/strict';
+import { afterEach, beforeEach, test } from 'node:test';
+import config from '../aleph.config.json' with { type: 'json' };
+import { noteContentSha256 } from '../src/note-hash.mjs';
+import { createNotesService } from '../src/notes-service.mjs';
+
+const FAKE_KEY = 'fake-key-for-test-only';
+const STUDENT = config.identityProvider;
+const USER_A = '0b8c1d52-3a41-4e7e-9d3a-6f2f7c1a9b10';
+const USER_B = '5d2f6c8e-91aa-4c1b-8a55-3c0e2d7f4b21';
+const A_NOTE = '11111111-1111-4111-8111-111111111111';
+const B_NOTE = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const B_OTHER = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const originalError = console.error;
+const originalLog = console.log;
+let logged;
+
+const b64 = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
+const now = () => Math.floor(Date.now() / 1000);
+const fakeToken = (marker) => `${b64({ alg: 'ES256', typ: 'JWT' })}.${b64({ iss: STUDENT.issuer, marker })}.c2ln`;
+const TOKEN_A = fakeToken('a');
+const TOKEN_B = fakeToken('b');
+const SUBJECTS = new Map([[TOKEN_A, USER_A], [TOKEN_B, USER_B]]);
+const fakeSupabase = { auth: { async getClaims(token) {
+  const sub = SUBJECTS.get(token);
+  if (sub) return { data: { claims: { iss: STUDENT.issuer, aud: STUDENT.audience, role: 'authenticated', sub, exp: now() + 600 } }, error: null };
+  return { data: null, error: new Error('bad signature') };
+} } };
+
+// 표 이름별 메모리 DB. 쓰기를 하는 표와 호출 횟수를 기록해서 "다른 표·다른 행을 건드리지 않았는지" 확인합니다.
+function makeFakeDb(tables, state) {
+  class Query {
+    constructor(table) { this.table = table; this.op = 'select'; this.filters = []; }
+    select() { return this; }
+    insert(values) { this.op = 'insert'; this.values = values; return this; }
+    update(values) { this.op = 'update'; this.values = values; return this; }
+    delete() { this.op = 'delete'; return this; }
+    eq(column, value) { this.filters.push((row) => row[column] === value); return this; }
+    maybeSingle() { this.single = true; return this; }
+    then(resolve, reject) { return Promise.resolve(this.run()).then(resolve, reject); }
+    run() {
+      const rows = tables[this.table];
+      assert.ok(rows, `알 수 없는 표 ${this.table}`);
+      state.calls.push(`${this.op}:${this.table}`);
+      if (state.failOn === `${this.op}:${this.table}`) return { data: null, error: { code: 'XX000', message: `secret ${FAKE_KEY}` } };
+      const matched = rows.filter((row) => this.filters.every((fn) => fn(row)));
+      const out = (list) => ({ data: this.single ? (list[0] ? { ...list[0] } : null) : list.map((row) => ({ ...row })), error: null });
+      if (this.op === 'insert') {
+        if (rows.some((row) => row.note_id === this.values.note_id)) return { data: null, error: { code: '23505' } };
+        if (!state.dropWrites) rows.push({ ...this.values });
+        return { data: null, error: null };
+      }
+      if (this.op === 'update') {
+        if (!state.dropWrites) for (const row of matched) Object.assign(row, this.values);
+        return out(matched);
+      }
+      if (this.op === 'delete') { for (const row of matched) rows.splice(rows.indexOf(row), 1); return out(matched); }
+      return out(matched);
+    }
+  }
+  return { from: (table) => new Query(table) };
+}
+
+const original = {
+  A: { note_id: A_NOTE, owner_id: USER_A, title: 'A 메모', content: 'A 내용' },
+  B: { note_id: B_NOTE, owner_id: USER_B, title: 'B 메모', content: 'B 내용' },
+  B2: { note_id: B_OTHER, owner_id: USER_B, title: 'B 메모 2', content: 'B 내용 2' },
+};
+const backupRow = (note) => ({ ...note, content_sha256: noteContentSha256(note.title, note.content) });
+let tables;
+let state;
+let service;
+
+function post(id, headers, extra = {}) {
+  const out = { headers: new Map() };
+  const response = {
+    setHeader: (key, value) => out.headers.set(key.toLowerCase(), value),
+    status: (code) => { out.status = code; return { json: (b) => { out.body = b; } }; },
+  };
+  const request = { method: 'POST', headers, url: `/api/notes/${id}/restore`, ...extra };
+  return service.handleRestore(request, response).then(() => out);
+}
+const asA = { authorization: `Bearer ${TOKEN_A}` };
+const asB = { authorization: `Bearer ${TOKEN_B}` };
+const live = (id) => tables.vault_notes.find((row) => row.note_id === id);
+const snapshotOf = () => JSON.stringify(tables);
+
+beforeEach(() => {
+  process.env.SUPABASE_URL = 'https://example-project.supabase.test';
+  process.env.SUPABASE_SECRET_KEY = FAKE_KEY;
+  logged = [];
+  console.error = (...args) => logged.push(args.join(' '));
+  console.log = (...args) => logged.push(args.join(' '));
+  tables = {
+    vault_notes: [{ ...original.A }, { ...original.B }, { ...original.B2 }],
+    vault_notes_backup: [backupRow(original.B)],
+  };
+  state = { calls: [], failOn: null, dropWrites: false };
+  service = createNotesService({ verifierOptions: { supabaseClient: fakeSupabase }, createDb: () => makeFakeDb(tables, state) });
+});
+afterEach(() => {
+  console.error = originalError; console.log = originalLog;
+  delete process.env.SUPABASE_URL; delete process.env.SUPABASE_SECRET_KEY;
+});
+
+test('내용 해시: 같은 제목·본문이면 같고, 경계가 다르면 다르다', () => {
+  assert.match(noteContentSha256('a', 'b'), /^[0-9a-f]{64}$/u);
+  assert.equal(noteContentSha256('a', 'b'), noteContentSha256('a', 'b'));
+  assert.notEqual(noteContentSha256('ab', 'c'), noteContentSha256('a', 'bc'));
+  assert.equal(noteContentSha256(1, 'b'), null);
+});
+
+test('B가 변조된 자기 메모 한 건을 복원: 사본과 id·소유자·해시가 같고 다른 행은 그대로', async () => {
+  Object.assign(live(B_NOTE), { title: '변조됨', content: '변조된 내용' });
+  const before = JSON.stringify([live(A_NOTE), live(B_OTHER), tables.vault_notes_backup]);
+  const out = await post(B_NOTE, asB);
+  assert.equal(out.status, 200);
+  assert.deepEqual(out.body, { id: B_NOTE, restored: true, contentSha256: backupRow(original.B).content_sha256 });
+  const row = live(B_NOTE);
+  assert.equal(row.note_id, B_NOTE); assert.equal(row.owner_id, USER_B);
+  assert.equal(noteContentSha256(row.title, row.content), tables.vault_notes_backup[0].content_sha256);
+  assert.equal(JSON.stringify([live(A_NOTE), live(B_OTHER), tables.vault_notes_backup]), before);
+  assert.equal(out.headers.get('cache-control'), 'no-store');
+});
+
+test('B가 삭제된 자기 메모 한 건을 복원: 같은 id·소유자로 다시 생기고 다른 행은 그대로', async () => {
+  tables.vault_notes.splice(tables.vault_notes.indexOf(live(B_NOTE)), 1);
+  const before = JSON.stringify([live(A_NOTE), live(B_OTHER)]);
+  const out = await post(B_NOTE, asB);
+  assert.equal(out.status, 200);
+  assert.deepEqual(live(B_NOTE), { ...original.B });
+  assert.equal(tables.vault_notes.length, 3);
+  assert.equal(JSON.stringify([live(A_NOTE), live(B_OTHER)]), before);
+});
+
+test('이미 같은 메모를 복원해도 결과는 같다', async () => {
+  const before = snapshotOf();
+  assert.equal((await post(B_NOTE, asB)).status, 200);
+  assert.equal(snapshotOf(), before);
+});
+
+test('A는 B의 메모를 복원할 수 없다: 404, 아무것도 바뀌지 않고 B의 사본 존재도 알려 주지 않는다', async () => {
+  Object.assign(live(B_NOTE), { title: '변조됨' });
+  const before = snapshotOf();
+  const out = await post(B_NOTE, asA);
+  assert.equal(out.status, 404); assert.deepEqual(out.body, { error: 'NOT_FOUND' });
+  assert.equal(snapshotOf(), before);
+  assert.ok(!state.calls.some((c) => c.startsWith('update') || c.startsWith('insert')));
+  const missing = await post('dddddddd-dddd-4ddd-8ddd-dddddddddddd', asB);
+  assert.equal(missing.status, 404); assert.deepEqual(missing.body, out.body);
+});
+
+test('사본의 내용 해시가 맞지 않으면 409로 멈추고 아무것도 쓰지 않는다', async () => {
+  tables.vault_notes_backup[0].content = '바뀐 사본 내용';
+  Object.assign(live(B_NOTE), { title: '변조됨' });
+  const before = snapshotOf();
+  const out = await post(B_NOTE, asB);
+  assert.equal(out.status, 409); assert.deepEqual(out.body, { error: 'BACKUP_INTEGRITY_FAILED' });
+  assert.equal(snapshotOf(), before);
+  assert.ok(logged.some((l) => l.includes('backup_hash_mismatch')));
+});
+
+test('같은 id의 행이 다른 소유자로 있으면 덮어쓰지 않는다', async () => {
+  live(B_NOTE).owner_id = USER_A;
+  const before = snapshotOf();
+  const out = await post(B_NOTE, asB);
+  assert.equal(out.status, 404);
+  assert.equal(snapshotOf(), before);
+  assert.ok(logged.some((l) => l.includes('restore_owner_conflict')));
+});
+
+test('본문의 owner_id·role·id·내용은 읽지 않는다', async () => {
+  Object.assign(live(B_NOTE), { title: '변조됨' });
+  const out = await post(B_NOTE, asB, { body: { owner_id: USER_A, userId: USER_A, role: 'instructor', id: A_NOTE, title: '끼워 넣기', content: 'x' } });
+  assert.equal(out.status, 200);
+  assert.equal(live(B_NOTE).owner_id, USER_B);
+  assert.equal(live(B_NOTE).title, original.B.title);
+  assert.deepEqual(live(A_NOTE), original.A);
+});
+
+test('로그인 없음 401, 가짜 토큰 401, POST가 아니면 405, 모양이 다른 id는 DB 없이 404', async () => {
+  assert.equal((await post(B_NOTE, {})).status, 401);
+  assert.equal((await post(B_NOTE, { authorization: 'Bearer nope' })).status, 401);
+  const wrongMethod = { headers: new Map() };
+  await service.handleRestore({ method: 'GET', headers: asB, url: `/api/notes/${B_NOTE}/restore` },
+    { setHeader: () => {}, status: (c) => { wrongMethod.status = c; return { json: (b) => { wrongMethod.body = b; } }; } });
+  assert.equal(wrongMethod.status, 405);
+  const calls = state.calls.length;
+  for (const bad of ['not-a-uuid', 'export', '..']) assert.equal((await post(bad, asB)).status, 404);
+  assert.equal(state.calls.length, calls);
+});
+
+test('복원 뒤 확인이 사본과 다르면 502로 알린다', async () => {
+  tables.vault_notes.splice(tables.vault_notes.indexOf(live(B_NOTE)), 1);
+  state.dropWrites = true;
+  const out = await post(B_NOTE, asB);
+  assert.equal(out.status, 502); assert.deepEqual(out.body, { error: 'RESTORE_VERIFY_FAILED' });
+});
+
+test('DB 오류 응답과 로그에 키·메모 내용·소유자 ID가 없다', async () => {
+  state.failOn = 'select:vault_notes_backup';
+  const out = await post(B_NOTE, asB);
+  assert.equal(out.status, 502);
+  const text = JSON.stringify([out.body, logged]);
+  for (const forbidden of [FAKE_KEY, 'B 내용', USER_B, USER_A, TOKEN_B]) assert.ok(!text.includes(forbidden), forbidden);
+  const ok = await (async () => { state.failOn = null; Object.assign(live(B_NOTE), { title: 'x' }); return post(B_NOTE, asB); })();
+  assert.equal(ok.status, 200);
+  assert.ok(!JSON.stringify([ok.body, logged]).includes('B 내용'));
+  assert.ok(!JSON.stringify(ok.body).includes(USER_B));
+});

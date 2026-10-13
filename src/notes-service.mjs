@@ -4,6 +4,7 @@ import config from '../aleph.config.json' with { type: 'json' };
 import { clientIp, createMemoryLimiter, durableHit, hashKey, tooMany } from './rate-limit.mjs';
 import { createLoginVerifier } from './verify-login.mjs';
 import { resourceIdFor, STUDENT_NOTE } from './resources.mjs';
+import { noteContentSha256 } from './note-hash.mjs';
 
 // 가상 메모 추가·조회·수정·삭제를 하는 서버 쪽 공통 코드입니다.
 // - 로그인 토큰은 틀이 준 src/verify-login.mjs(도우미)로만 검사합니다. 도우미는 고치지 않습니다.
@@ -27,6 +28,7 @@ export const NOTES_LIMITS = {
 };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const COLUMNS = 'note_id, title, content, owner_id';
+const BACKUP_COLUMNS = 'note_id, owner_id, title, content, content_sha256';
 // 본문에 이 이름이 있어도 값으로 쓰지 않습니다. 수정 요청에서 다른 사람 ID가 적혀 있으면 소유자 변경 시도로 보고 거부합니다.
 const OWNER_KEYS = ['owner_id', 'ownerId', 'user_id', 'userId'];
 const toNote = (row) => ({ id: row.note_id, title: row.title, body: row.content });
@@ -66,6 +68,18 @@ function idFromRequest(request) {
     try {
       const parts = new URL(request.url, 'http://local.invalid').pathname.split('/').filter(Boolean);
       if (parts.length === 3 && parts[0] === 'api' && parts[1] === 'notes') return decodeURIComponent(parts[2]);
+    } catch { /* 아래 값으로 넘어갑니다. */ }
+  }
+  const value = request.query?.id;
+  return typeof value === 'string' ? value : '';
+}
+
+// /api/notes/<id>/restore 의 <id>. 주소의 실제 조각을 우선하고, 없으면 Vercel이 준 경로 값을 씁니다.
+function restoreIdFromRequest(request) {
+  if (typeof request.url === 'string') {
+    try {
+      const parts = new URL(request.url, 'http://local.invalid').pathname.split('/').filter(Boolean);
+      if (parts.length === 4 && parts[0] === 'api' && parts[1] === 'notes' && parts[3] === 'restore') return decodeURIComponent(parts[2]);
     } catch { /* 아래 값으로 넘어갑니다. */ }
   }
   const value = request.query?.id;
@@ -212,5 +226,52 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
     });
   }
 
-  return { handleCollection, handleItem };
+
+  // 10단계 /api/notes/:id/restore : POST. 비공개 사본 표(vault_notes_backup)에서 "지정한 메모 한 건"만 되살립니다.
+  // - 대상은 주소의 id 하나뿐입니다. 본문(body)은 읽지 않습니다(owner_id·role 같은 값이 와도 무시).
+  // - 사본은 id와 소유자(확인된 사용자)가 모두 같은 행만 읽고, 사본의 내용 해시를 다시 계산해 저장된 해시와 대조합니다.
+  // - 되살린 뒤 현재 메모를 다시 읽어 id·소유자·내용 해시가 사본과 같은지 확인합니다.
+  // - 다른 메모와 사본 표, 감사 기록은 건드리지 않습니다. 다른 사람 소유 행은 덮어쓰지 않습니다.
+  async function handleRestore(request, response) {
+    return run(request, response, ['POST'], async ({ db, userId }) => {
+      const rawId = restoreIdFromRequest(request);
+      if (!UUID.test(rawId)) return deny(response, 404, { error: 'NOT_FOUND' }, 'bad_id');
+      const id = rawId.toLowerCase();
+      const missing = (reason) => deny(response, 404, { error: 'NOT_FOUND' }, reason);
+      const { data: backup, error: backupError } = await db.from('vault_notes_backup').select(BACKUP_COLUMNS)
+        .eq('note_id', id).eq('owner_id', userId).maybeSingle();
+      if (backupError) return failed(response, backupError, 'read');
+      // 사본이 없거나 주인이 다르면 같은 404입니다. 돌아온 행도 id·소유자를 한 번 더 비교합니다.
+      if (!backup || backup.note_id !== id || backup.owner_id !== userId) return missing('backup_not_found_or_not_owner');
+      const wanted = noteContentSha256(backup.title, backup.content);
+      if (wanted === null || wanted !== backup.content_sha256) {
+        return deny(response, 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_hash_mismatch');
+      }
+      const fields = { title: backup.title, content: backup.content };
+      // 내 메모가 남아 있으면(변조) 그 한 행을 사본 내용으로 되돌리고, 없으면(삭제) 같은 id로 다시 만듭니다.
+      const { data: updated, error: updateError } = await db.from('vault_notes').update(fields)
+        .eq('note_id', id).eq('owner_id', userId).select(COLUMNS).maybeSingle();
+      if (updateError) return failed(response, updateError, 'write');
+      let live = updated;
+      if (!live) {
+        const { error: insertError } = await db.from('vault_notes').insert({ note_id: id, owner_id: userId, ...fields });
+        if (insertError) {
+          // 같은 id의 행이 다른 소유자로 있으면 덮어쓰지 않습니다.
+          if (insertError.code === '23505') return missing('restore_owner_conflict');
+          return failed(response, insertError, 'write');
+        }
+        const { data: again, error: readError } = await db.from('vault_notes').select(COLUMNS)
+          .eq('note_id', id).eq('owner_id', userId).maybeSingle();
+        if (readError) return failed(response, readError, 'read');
+        live = again;
+      }
+      const same = live && live.note_id === id && live.owner_id === userId
+        && noteContentSha256(live.title, live.content) === backup.content_sha256;
+      if (!same) return deny(response, 502, { error: 'RESTORE_VERIFY_FAILED' }, 'restore_verify_failed');
+      console.log('notes: restored one note');
+      return send(response, 200, { id, restored: true, contentSha256: backup.content_sha256 });
+    });
+  }
+
+  return { handleCollection, handleItem, handleRestore };
 }

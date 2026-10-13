@@ -84,7 +84,12 @@ function zoneOf(request) {
       if (!ID_PATTERN.test(got[i]) || RESERVED_IDS.includes(got[i].toLowerCase())) return null;
     } else if (want[i] !== got[i]) return null;
   }
-  return ZONE_ROUTES[route];
+  const zone = ZONE_ROUTES[route];
+  // 허용된 경로 목록에는 공지 전용 주소가 없어서 강사 공지도 메모와 같은 /notes/:id 모양으로 올 수 있습니다.
+  // 그래서 자료 ID 자리의 값이 공지 표시(notice·instructor로 시작)면 주소 모양과 상관없이 강사 공지 자원으로 봅니다. (이 표시 규칙은 내 짐작입니다.)
+  const idIndex = want.indexOf(':id');
+  if (idIndex !== -1 && /^(notice|instructor)/iu.test(got[idIndex])) return { resource: 'instructor.notice', action: zone.action };
+  return zone;
 }
 export async function decide(request) {
   if (request?.deviceRegistered !== true) return respond(request, 'deny', 'device_not_registered', 'device_registered');

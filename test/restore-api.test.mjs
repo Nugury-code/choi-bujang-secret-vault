@@ -204,12 +204,16 @@ test('확인 단계가 틀리면 502로 알리고 메모는 한 글자도 바뀌
   assert.ok(logged.some((l) => l.includes('restore_verify_failed')));
 });
 
-test('본문의 owner_id·id는 대상을 바꾸지 못한다(대조에만 쓰여 어긋나면 멈춤), role·맨 위 title·content는 읽지 않는다', async () => {
+test('본문의 id는 어긋나면 멈추고, owner_id는 대상도 복원 여부도 바꾸지 못한다, role·맨 위 title·content는 읽지 않는다', async () => {
   Object.assign(live(B_NOTE), { title: '변조됨' });
   const before = snapshotOf();
-  const spoof = await post(B_NOTE, asB, { body: { owner_id: USER_A, userId: USER_A, id: A_NOTE } });
+  const spoof = await post(B_NOTE, asB, { body: { id: A_NOTE } });
   assert.equal(spoof.status, 409); assert.deepEqual(spoof.body, { error: 'BACKUP_MISMATCH' });
   assert.equal(snapshotOf(), before);
+  // 소유자 값(owner_id·userId)은 대상을 바꾸지도, 복원을 막지도 않는다: 복원은 로그인한 본인 소유의 사본 한 건뿐.
+  const ownerSpoof = await post(B_NOTE, asB, { body: { owner_id: USER_A, userId: USER_A } });
+  assert.equal(ownerSpoof.status, 200); assert.equal(live(B_NOTE).owner_id, USER_B); assert.deepEqual(live(A_NOTE), original.A);
+  Object.assign(live(B_NOTE), { title: '변조됨' });
   const out = await post(B_NOTE, asB, { body: { role: 'instructor', title: '끼워 넣기', content: 'x' } });
   assert.equal(out.status, 200);
   assert.equal(live(B_NOTE).owner_id, USER_B);
@@ -269,12 +273,11 @@ test('요청에 실린 사본 내용이 서버의 검증된 사본과 다르면 
   assert.deepEqual(state.audit.map((row) => row.outcome), ['request_mismatch', 'request_mismatch']);
 });
 
-test('요청의 id·소유자가 주소·확인된 사용자와 다르면 DB를 부르지 않고 409로 멈춘다', async () => {
+test('요청의 id가 주소와 다르거나 내용 값끼리 모순되면 DB를 부르지 않고 409로 멈춘다', async () => {
   const before = snapshotOf();
   const otherId = await post(B_NOTE, asB, { body: { id: B_OTHER } });
-  const otherOwner = await post(B_NOTE, asB, { body: { backup: { ownerId: USER_A } } });
   const inconsistent = await post(B_NOTE, asB, { body: { backup: { content: 'x' }, expected: { content: 'y' } } });
-  for (const out of [otherId, otherOwner, inconsistent]) { assert.equal(out.status, 409); assert.deepEqual(out.body, { error: 'BACKUP_MISMATCH' }); }
+  for (const out of [otherId, inconsistent]) { assert.equal(out.status, 409); assert.deepEqual(out.body, { error: 'BACKUP_MISMATCH' }); }
   assert.deepEqual(state.calls, []);
   assert.equal(snapshotOf(), before);
 });

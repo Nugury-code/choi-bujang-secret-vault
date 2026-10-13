@@ -1,6 +1,7 @@
 // 10단계: 복구 요청 본문에 "이 사본이 맞는지 확인해 달라"는 값이 실려 오면 읽어 두는 곳입니다.
 // 이 값은 "복원해도 되는지 대조"하는 데만 쓰고, 복원할 내용으로는 절대 쓰지 않습니다(복원 내용은 서버의 검증된 사본뿐).
-// 대조 값이 서버의 검증된 사본·확인된 사용자와 하나라도 다르면 복원하지 않고 멈춥니다. 값이 없으면 그냥 건너뜁니다.
+// 대조 값(id, 사본 내용)이 주소의 id·서버의 검증된 사본과 하나라도 다르면 복원하지 않고 멈춥니다. 값이 없으면 그냥 건너뜁니다.
+// 소유자 값은 읽어서 감사 기록의 "값이 왔는지"에만 쓰고 복원 여부에는 쓰지 않습니다(아래 pinConflicts 설명).
 // 문서에 요청 모양이 없어 이름은 내가 정한 짐작입니다: id(id·noteId·note_id), 소유자(ownerId·owner_id·owner·userId·user_id),
 // 사본 내용(backup·snapshot·expected·copy·source·submitted 안의 title과 content·body·text).
 // 모양이 틀린 값(UUID가 아닌 id 등)은 없는 것으로 보고 무시합니다(엉뚱한 칸 때문에 정상 복구를 막지 않으려는 것).
@@ -65,9 +66,9 @@ export function expectedCopy(pin) {
   return Object.keys(out).length ? out : null;
 }
 
-// 서버가 바로 볼 수 있는 대조: id는 주소의 id와, 소유자는 확인된 사용자와 같아야 하고, 내용 값끼리 서로 모순되면 안 됩니다.
-export function pinConflicts(pin, { id, userId }) {
-  return pin.inconsistent
-    || pin.ids.some((value) => value !== id)
-    || pin.owners.some((value) => value !== String(userId).toLowerCase());
+// 서버가 바로 볼 수 있는 대조: id는 주소의 id와 같아야 하고, 내용 값끼리 서로 모순되면 안 됩니다.
+// 소유자 값은 여기서 복원을 막는 데 쓰지 않습니다: 요청에 실린 소유자 값이 로그인 계정 번호와 다른 체계의 이름(가명 ID 등)일 수 있어
+// 같은 사람인데도 정상 복구를 막을 수 있기 때문입니다. 소유자는 어차피 로그인 토큰으로 확인된 사용자와 사본의 소유자가 같은 행만 복원됩니다(DB 함수).
+export function pinConflicts(pin, { id }) {
+  return pin.inconsistent || pin.ids.some((value) => value !== id);
 }

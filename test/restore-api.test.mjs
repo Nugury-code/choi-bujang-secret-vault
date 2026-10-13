@@ -40,7 +40,8 @@ function makeFakeDb(tables, state) {
       if (name !== 'restore_one_note') return { data: null, error: { code: 'PGRST202', message: 'not found' } };
       state.calls.push(`rpc:${name}:${args.p_dry_run ? 'dry' : 'run'}`);
       if (state.failRpc) return err(`secret ${FAKE_KEY}`, 'XX000');
-      if (state.badReply) return { data: { id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', restored: true, contentSha256: 'x' }, error: null };
+      if (state.badReply && state.badReplyOwner) return { data: { id: args.p_note_id, ownerId: USER_A, restored: true, contentSha256: noteContentSha256('B 메모', 'B 내용') }, error: null };
+      if (state.badReply) return { data: { id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', ownerId: USER_B, restored: true, contentSha256: 'x' }, error: null };
       const id = args.p_note_id;
       const owner = args.p_owner_id;
       const b = tables.vault_notes_backup.find((row) => row.note_id === id && row.owner_id === owner);
@@ -57,7 +58,7 @@ function makeFakeDb(tables, state) {
       if (state.verifyFails) return err('RESTORE_VERIFY_FAILED');
       if (l) Object.assign(l, { title: b.title, content: b.content });
       else tables.vault_notes.push({ note_id: id, owner_id: owner, title: b.title, content: b.content });
-      return { data: { id, restored: true, contentSha256: b.content_sha256, changed: will, beforeSha256: beforeSha }, error: null };
+      return { data: { id, ownerId: owner, restored: true, contentSha256: b.content_sha256 }, error: null };
     },
   };
 }
@@ -96,7 +97,7 @@ beforeEach(() => {
     vault_notes: [{ ...original.A }, { ...original.B }, { ...original.B2 }],
     vault_notes_backup: [backupRow(original.B)],
   };
-  state = { calls: [], failRpc: false, badReply: false, verifyFails: false };
+  state = { calls: [], failRpc: false, badReply: false, verifyFails: false, badReplyOwner: false };
   service = createNotesService({ verifierOptions: { supabaseClient: fakeSupabase }, createDb: () => makeFakeDb(tables, state) });
 });
 afterEach(() => {
@@ -118,8 +119,7 @@ test('B가 변조된 자기 메모 한 건을 복원: 사본과 id·소유자·�
   assert.equal(out.status, 200);
   const want = backupRow(original.B).content_sha256;
   assert.deepEqual(out.body, {
-    id: B_NOTE, restored: true, contentSha256: want, beforeSha256: noteContentSha256('변조됨', '변조된 내용'),
-    changed: { recreate: false, title: true, content: true },
+    id: B_NOTE, ownerId: USER_B, restored: true, contentSha256: want,
   });
   const row = live(B_NOTE);
   assert.equal(row.note_id, B_NOTE); assert.equal(row.owner_id, USER_B);
@@ -204,7 +204,7 @@ test('로그인 없음 401, 가짜 토큰 401, POST가 아니면 405, 모양이 
   assert.deepEqual(state.calls, []);
 });
 
-test('DB 오류 응답과 로그에 키·메모 내용·소유자 ID가 없다', async () => {
+test('DB 오류 응답과 로그에 키·메모 내용·소유자 ID가 없고, 성공 응답의 소유자는 본인 ID뿐이다', async () => {
   state.failRpc = true;
   const out = await post(B_NOTE, asB);
   assert.equal(out.status, 502);
@@ -214,11 +214,21 @@ test('DB 오류 응답과 로그에 키·메모 내용·소유자 ID가 없다',
   const ok = await post(B_NOTE, asB);
   assert.equal(ok.status, 200);
   assert.ok(!JSON.stringify([ok.body, logged]).includes('B 내용'));
-  assert.ok(!JSON.stringify(ok.body).includes(USER_B));
+  // 성공 응답의 소유자는 요청한 본인(토큰으로 확인된 사용자)의 ID 하나뿐이고, 로그에는 사용자 ID가 남지 않는다.
+  assert.equal(ok.body.ownerId, USER_B);
+  assert.ok(!JSON.stringify(ok.body).includes(USER_A));
+  assert.ok(!JSON.stringify(logged).includes(USER_B));
 });
 
 test('DB가 엉뚱한 id·모양으로 답하면 그대로 전달하지 않고 502로 알린다', async () => {
   state.badReply = true;
+  const out = await post(B_NOTE, asB);
+  assert.equal(out.status, 502); assert.deepEqual(out.body, { error: 'RESTORE_VERIFY_FAILED' });
+  assert.ok(logged.some((l) => l.includes('restore_bad_reply')));
+});
+
+test('복구 응답의 소유자가 확인된 사용자와 다르면 그대로 전달하지 않고 502로 알린다', async () => {
+  state.badReply = true; state.badReplyOwner = true;
   const out = await post(B_NOTE, asB);
   assert.equal(out.status, 502); assert.deepEqual(out.body, { error: 'RESTORE_VERIFY_FAILED' });
   assert.ok(logged.some((l) => l.includes('restore_bad_reply')));

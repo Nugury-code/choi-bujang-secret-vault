@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 import config from '../aleph.config.json' with { type: 'json' };
+import { noteContentSha256 } from './note-hash.mjs';
 import { clientIp, createMemoryLimiter, durableHit, hashKey, tooMany } from './rate-limit.mjs';
 import { expectedCopy, hasPin, pinConflicts, readPin } from './restore-pin.mjs';
 import { createLoginVerifier } from './verify-login.mjs';
@@ -263,11 +264,51 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
       const id = rawId.toLowerCase();
       // 요청에 사본 대조 값이 실려 왔고 주소의 id·확인된 사용자와 어긋나면 DB를 부르기 전에 멈춥니다.
       if (pinConflicts(pin, { id, userId })) return finish('request_mismatch', 409, { error: 'BACKUP_MISMATCH' }, 'request_mismatch');
-      // 순서(카드 문장 그대로): ① 사본이 있는지 → ② 사본을 다시 읽어 검증이 성공하는지 → ③ 실행 전에 버전과 바뀔 항목 보여 주기 → ④ 그다음에야 복원.
-      // ①②③은 쓰기 없는 미리보기 호출(p_dry_run=true) 하나가 맡고, 어느 하나라도 틀리면 여기서 멈춥니다(아무것도 쓰지 않음).
-      const call = (dry) => db.rpc('restore_one_note', { p_note_id: id, p_owner_id: userId, p_dry_run: dry, p_expected: expectedCopy(pin) });
-      // 오류 이름 → 응답. 멈춰야 하면 응답을 보내고 true를 돌려줍니다.
-      const stopOnError = async (error) => {
+      // 순서(카드 문장 그대로, 모두 이 함수 안에서 눈에 보이게):
+      // ① 사본이 있는지 → ② 사본을 읽어 내용 해시를 다시 계산해 검증이 성공하는지 → ③ 실행 전에 사본 버전과 바뀔 항목 만들기
+      // → ④ 쓰기 직전에 사본을 다시 읽어 ②와 같은지 확인 → ⑤ 복원(DB 함수 한 번, 안에서 한 번 더 검증) → ⑥ 쓴 뒤 다시 읽어 사본과 같은지 확인.
+      // ①~④ 중 하나라도 틀리면 거기서 멈추고 아무것도 쓰지 않습니다. ⑥이 틀리면 ③에서 읽어 둔 복구 직전 모습으로 되돌리고 502로 알립니다.
+      const isSha = (v) => typeof v === 'string' && /^[0-9a-f]{64}$/u.test(v);
+      const readBackup = () => db.from('vault_notes_backup')
+        .select('note_id, owner_id, title, content, content_sha256, backed_up_at')
+        .eq('note_id', id).eq('owner_id', userId).maybeSingle();
+      const readLive = () => db.from('vault_notes').select(COLUMNS).eq('note_id', id).eq('owner_id', userId).maybeSingle();
+      const shaOf = (row) => (row ? noteContentSha256(row.title, row.content) : null);
+      // 사본 한 줄이 믿을 만한지: 같은 id·소유자이고, 제목·본문으로 다시 계산한 해시가 저장된 해시와 같다.
+      const verified = (row) => Boolean(row) && row.note_id === id && row.owner_id === userId
+        && isSha(row.content_sha256) && shaOf(row) === row.content_sha256;
+      // ① 사본 읽기: 없거나 주인이 다르면 같은 404(남의 사본이 있는지 알려 주지 않음).
+      const first = await readBackup();
+      if (first.error) { console.error('notes: backup read failed', first.error.code ?? 'unknown'); return finish('read_failed', 502, { error: 'NOTES_READ_FAILED' }, 'backup_read_failed'); }
+      const copy = first.data;
+      if (!copy || copy.note_id !== id || copy.owner_id !== userId) return finish('not_found', 404, { error: 'NOT_FOUND' }, 'backup_not_found_or_not_owner');
+      // ② 검증: 실패하면 복원하지 않고 멈춥니다.
+      if (!verified(copy)) return finish('backup_integrity', 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_hash_mismatch');
+      // 요청이 사본 내용을 같이 보냈다면 검증된 사본과 같아야 합니다.
+      const want = expectedCopy(pin);
+      if (want && ((typeof want.title === 'string' && want.title !== copy.title) || (typeof want.content === 'string' && want.content !== copy.content))) {
+        return finish('request_mismatch', 409, { error: 'BACKUP_MISMATCH' }, 'request_mismatch');
+      }
+      // ③ 실행 전 모습: 지금 메모가 있는지, 사본과 무엇이 다른지(원문은 응답에 넣지 않습니다).
+      const before = await readLive();
+      if (before.error) { console.error('notes: read failed', before.error.code ?? 'unknown'); return finish('read_failed', 502, { error: 'NOTES_READ_FAILED' }, 'live_read_failed'); }
+      const old = before.data && before.data.owner_id === userId ? before.data : null;
+      const willChange = { recreate: !old, title: !old || old.title !== copy.title, content: !old || old.content !== copy.content };
+      const backupVersion = { contentSha256: copy.content_sha256, backedUpAt: copy.backed_up_at ?? null };
+      const current = { exists: Boolean(old), contentSha256: shaOf(old) };
+      console.log('notes: restore preview ok');
+      if (dryRun) return finish('preview', 200, { id, dryRun: true, backup: backupVersion, current, willChange });
+      // ④ 쓰기 직전에 사본을 다시 읽어 ②에서 본 것과 같은지 확인합니다.
+      const again = await readBackup();
+      if (again.error) { console.error('notes: backup read failed', again.error.code ?? 'unknown'); return finish('read_failed', 502, { error: 'NOTES_READ_FAILED' }, 'backup_reread_failed'); }
+      const copy2 = again.data;
+      if (!verified(copy2) || copy2.content_sha256 !== copy.content_sha256 || copy2.title !== copy.title || copy2.content !== copy.content) {
+        return finish('backup_integrity', 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_changed_or_invalid');
+      }
+      // ⑤ 복원: 이 한 건만. DB 함수가 한 덩어리 안에서 사본을 다시 검증하고 쓰며, 틀리면 전체를 취소합니다.
+      const wrote = await db.rpc('restore_one_note', { p_note_id: id, p_owner_id: userId, p_dry_run: false, p_expected: want });
+      if (wrote.error) {
+        const error = wrote.error;
         const tag = typeof error.message === 'string' ? error.message.trim() : '';
         if (tag === 'BACKUP_NOT_FOUND') return finish('not_found', 404, { error: 'NOT_FOUND' }, 'backup_not_found_or_not_owner');
         if (tag === 'BACKUP_INTEGRITY_FAILED') return finish('backup_integrity', 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_hash_mismatch');
@@ -277,31 +318,27 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
         if (error.code === '23505') return finish('owner_conflict', 404, { error: 'NOT_FOUND' }, 'restore_owner_conflict');
         console.error('notes: write failed', error.code ?? 'unknown');
         return finish('write_failed', 502, { error: 'NOTES_WRITE_FAILED' }, 'write_failed');
-      };
-      const isSha = (v) => typeof v === 'string' && /^[0-9a-f]{64}$/u.test(v);
-      // ①②③ 사본 확인·검증·미리보기
-      const first = await call(true);
-      if (first.error) return stopOnError(first.error);
-      const pv = first.data;
-      const previewOk = pv && typeof pv === 'object' && pv.id === id && pv.dryRun === true && isSha(pv.backup?.contentSha256);
-      if (!previewOk) return finish('bad_reply', 502, { error: 'RESTORE_VERIFY_FAILED' }, 'restore_bad_reply');
-      // 실행 전에 보여 줄 내용: 사본 버전과 바뀔 항목(원문은 없음).
-      const preview = { backupVersion: pv.backup, current: pv.current, willChange: pv.willChange };
-      console.log('notes: restore preview ok');
-      if (dryRun) return finish('preview', 200, pv);
-      // ④ 복원. DB 함수가 쓰기 직전에 사본을 다시 읽어 검증하고, 쓴 뒤에도 다시 확인합니다. 틀리면 전체가 취소됩니다.
-      const second = await call(false);
-      if (second.error) return stopOnError(second.error);
-      const data = second.data;
-      // 돌아온 값도 한 번 더 봅니다: 같은 id·소유자, 해시 모양, 그리고 미리보기에서 본 사본 버전과 같은 해시일 때만 전달합니다.
-      const good = data && typeof data === 'object' && data.id === id && data.restored === true && data.ownerId === userId
-        && isSha(data.contentSha256) && data.contentSha256 === pv.backup.contentSha256;
-      if (!good) return finish('bad_reply', 502, { error: 'RESTORE_VERIFY_FAILED' }, 'restore_bad_reply');
+      }
+      const data = wrote.data;
+      const replyGood = data && typeof data === 'object' && data.id === id && data.restored === true && data.ownerId === userId
+        && isSha(data.contentSha256) && data.contentSha256 === copy.content_sha256;
+      // ⑥ 쓴 뒤 다시 읽어 id·소유자·내용 해시가 사본과 같은지 확인합니다. 틀리면 복구 직전 모습으로 되돌립니다.
+      const after = replyGood ? await readLive() : { data: null };
+      const same = Boolean(after.data) && !after.error && after.data.note_id === id && after.data.owner_id === userId && shaOf(after.data) === copy.content_sha256;
+      if (!replyGood || !same) {
+        try {
+          const undo = old
+            ? await db.from('vault_notes').update({ title: old.title, content: old.content }).eq('note_id', id).eq('owner_id', userId)
+            : await db.from('vault_notes').delete().eq('note_id', id).eq('owner_id', userId);
+          if (undo?.error) console.error('notes: undo failed', undo.error.code ?? 'unknown');
+        } catch { console.error('notes: undo unavailable'); }
+        return finish('bad_reply', 502, { error: 'RESTORE_VERIFY_FAILED' }, 'restore_bad_reply');
+      }
       console.log('notes: restored one note');
       return finish('restored', 200, {
-        id: data.id, ownerId: data.ownerId, restored: true, contentSha256: data.contentSha256,
-        preview,
-        ...(data.report && typeof data.report === 'object' ? { report: data.report } : {}),
+        id, ownerId: userId, restored: true, contentSha256: copy.content_sha256,
+        preview: { backupVersion, current, willChange },
+        report: { backupVersion, before: { exists: Boolean(old), contentSha256: shaOf(old) }, changed: willChange },
       });
     });
   }

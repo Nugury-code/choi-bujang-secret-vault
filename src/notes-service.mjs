@@ -4,7 +4,6 @@ import config from '../aleph.config.json' with { type: 'json' };
 import { clientIp, createMemoryLimiter, durableHit, hashKey, tooMany } from './rate-limit.mjs';
 import { createLoginVerifier } from './verify-login.mjs';
 import { resourceIdFor, STUDENT_NOTE } from './resources.mjs';
-import { noteContentSha256 } from './note-hash.mjs';
 
 // 가상 메모 추가·조회·수정·삭제를 하는 서버 쪽 공통 코드입니다.
 // - 로그인 토큰은 틀이 준 src/verify-login.mjs(도우미)로만 검사합니다. 도우미는 고치지 않습니다.
@@ -28,7 +27,6 @@ export const NOTES_LIMITS = {
 };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const COLUMNS = 'note_id, title, content, owner_id';
-const BACKUP_COLUMNS = 'note_id, owner_id, title, content, content_sha256, backed_up_at';
 // 본문에 이 이름이 있어도 값으로 쓰지 않습니다. 수정 요청에서 다른 사람 ID가 적혀 있으면 소유자 변경 시도로 보고 거부합니다.
 const OWNER_KEYS = ['owner_id', 'ownerId', 'user_id', 'userId'];
 const toNote = (row) => ({ id: row.note_id, title: row.title, body: row.content });
@@ -228,83 +226,35 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
 
 
   // 10단계 /api/notes/:id/restore : POST. 비공개 사본 표(vault_notes_backup)에서 "지정한 메모 한 건"만 되살립니다.
-  // - 대상은 주소의 id 하나뿐입니다. 본문(body)에서는 dryRun이 true인지만 읽습니다(owner_id·role 같은 값이 와도 무시).
-  // - dryRun이 true이면 아무것도 쓰지 않고, 복원할 사본의 버전(내용 해시·사본 시각)과 바뀔 항목(제목·본문·다시 만듦)만 보여 줍니다.
-  //   메모 제목·본문 원문은 응답에 넣지 않습니다. 실제 복원 응답에도 같은 "바뀐 항목"을 함께 돌려줍니다.
-  // - 사본은 id와 소유자(확인된 사용자)가 모두 같은 행만 읽고, 사본의 내용 해시를 다시 계산해 저장된 해시와 대조합니다.
-  // - 되살린 뒤 현재 메모를 다시 읽어 id·소유자·내용 해시가 사본과 같은지 확인합니다.
-  // - 다른 메모와 사본 표, 감사 기록은 건드리지 않습니다. 다른 사람 소유 행은 덮어쓰지 않습니다.
+  // 확인과 쓰기는 DB 함수 restore_one_note(supabase/005_restore_function.sql) 한 번의 호출 안에서 한 덩어리로 일어납니다.
+  // - 사본 읽기·소유자 대조·내용 해시 검증·쓰기·쓴 뒤 다시 읽어 대조·사본 재확인이 모두 이 덩어리 안에 있고, 하나라도 틀리면
+  //   덩어리 전체가 취소되어 메모는 한 글자도 바뀌지 않습니다(그래서 "쓴 뒤 되돌리기"가 따로 없습니다).
+  // - 대상은 주소의 id 하나뿐입니다. 소유자는 확인된 사용자 ID로만 정합니다. 본문(body)에서는 dryRun이 정확히 true인지만 읽습니다
+  //   (owner_id·role 같은 값이 와도 무시). dryRun이 true이면 아무것도 쓰지 않고 복원할 버전·바뀔 항목만 돌려줍니다(원문 없음).
+  // - 다른 메모와 사본 표는 건드리지 않습니다. 다른 사람 소유 행은 덮어쓰지 않고(오류로 끝남), 사본이 없거나 주인이 다르면 같은 404입니다.
   async function handleRestore(request, response) {
     return run(request, response, ['POST'], async ({ db, userId }) => {
       const rawId = restoreIdFromRequest(request);
       if (!UUID.test(rawId)) return deny(response, 404, { error: 'NOT_FOUND' }, 'bad_id');
       const id = rawId.toLowerCase();
-      const missing = (reason) => deny(response, 404, { error: 'NOT_FOUND' }, reason);
-      const { data: backup, error: backupError } = await db.from('vault_notes_backup').select(BACKUP_COLUMNS)
-        .eq('note_id', id).eq('owner_id', userId).maybeSingle();
-      if (backupError) return failed(response, backupError, 'read');
-      // 사본이 없거나 주인이 다르면 같은 404입니다. 돌아온 행도 id·소유자를 한 번 더 비교합니다.
-      if (!backup || backup.note_id !== id || backup.owner_id !== userId) return missing('backup_not_found_or_not_owner');
-      const wanted = noteContentSha256(backup.title, backup.content);
-      if (wanted === null || wanted !== backup.content_sha256) {
-        return deny(response, 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_hash_mismatch');
+      const dryRun = parseBody(request)?.dryRun === true;
+      const { data, error } = await db.rpc('restore_one_note', { p_note_id: id, p_owner_id: userId, p_dry_run: dryRun });
+      if (error) {
+        const tag = typeof error.message === 'string' ? error.message.trim() : '';
+        if (tag === 'BACKUP_NOT_FOUND') return deny(response, 404, { error: 'NOT_FOUND' }, 'backup_not_found_or_not_owner');
+        if (tag === 'BACKUP_INTEGRITY_FAILED') return deny(response, 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_hash_mismatch');
+        if (tag === 'RESTORE_VERIFY_FAILED') return deny(response, 502, { error: 'RESTORE_VERIFY_FAILED' }, 'restore_verify_failed');
+        // 같은 id의 행이 다른 소유자로 있으면 덮어쓰지 않습니다.
+        if (error.code === '23505') return deny(response, 404, { error: 'NOT_FOUND' }, 'restore_owner_conflict');
+        return failed(response, error, 'write');
       }
-      // 실행 전 모습: 지금 내 메모가 있는지, 사본과 무엇이 다른지 읽기만 합니다.
-      const { data: current, error: currentError } = await db.from('vault_notes').select(COLUMNS)
-        .eq('note_id', id).eq('owner_id', userId).maybeSingle();
-      if (currentError) return failed(response, currentError, 'read');
-      const found = Boolean(current && current.note_id === id && current.owner_id === userId);
-      const willChange = {
-        recreate: !found,
-        title: !found || current.title !== backup.title,
-        content: !found || current.content !== backup.content,
-      };
-      const currentSha256 = found ? noteContentSha256(current.title, current.content) : null;
-      if (parseBody(request)?.dryRun === true) {
-        console.log('notes: restore preview');
-        return send(response, 200, {
-          id, dryRun: true,
-          backup: { contentSha256: backup.content_sha256, backedUpAt: backup.backed_up_at ?? null },
-          current: { exists: found, contentSha256: currentSha256 },
-          willChange,
-        });
-      }
-      // 쓰기 직전에 사본을 한 번 더 읽어 처음 검증한 것과 같은지, 해시가 아직 맞는지 확인합니다. 다르면 아무것도 쓰지 않고 멈춥니다.
-      const { data: reread, error: rereadError } = await db.from('vault_notes_backup').select(BACKUP_COLUMNS)
-        .eq('note_id', id).eq('owner_id', userId).maybeSingle();
-      if (rereadError) return failed(response, rereadError, 'read');
-      if (!reread || reread.note_id !== id || reread.owner_id !== userId
-          || reread.content_sha256 !== backup.content_sha256
-          || noteContentSha256(reread.title, reread.content) !== reread.content_sha256) {
-        return deny(response, 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_changed_before_write');
-      }
-      const fields = { title: reread.title, content: reread.content };
-      // 내 메모가 남아 있으면(변조) 그 한 행을 사본 내용으로 되돌리고, 없으면(삭제) 같은 id로 다시 만듭니다.
-      const { data: updated, error: updateError } = await db.from('vault_notes').update(fields)
-        .eq('note_id', id).eq('owner_id', userId).select(COLUMNS).maybeSingle();
-      if (updateError) return failed(response, updateError, 'write');
-      let live = updated;
-      if (!live) {
-        const { error: insertError } = await db.from('vault_notes').insert({ note_id: id, owner_id: userId, ...fields });
-        if (insertError) {
-          // 같은 id의 행이 다른 소유자로 있으면 덮어쓰지 않습니다.
-          if (insertError.code === '23505') return missing('restore_owner_conflict');
-          return failed(response, insertError, 'write');
-        }
-        const { data: again, error: readError } = await db.from('vault_notes').select(COLUMNS)
-          .eq('note_id', id).eq('owner_id', userId).maybeSingle();
-        if (readError) return failed(response, readError, 'read');
-        live = again;
-      }
-      const same = live && live.note_id === id && live.owner_id === userId
-        && noteContentSha256(live.title, live.content) === backup.content_sha256;
-      if (!same) {
-        // 쓴 값은 위에서 두 번 검증한 사본의 내용입니다. 읽어 온 모습이 사본과 다르면 성공이라고 하지 않고 502로 알리며,
-        // 되돌리기로 변조된 값을 다시 쓰지는 않습니다(원인은 서버 로그의 짧은 이유 한 줄로 확인).
-        return deny(response, 502, { error: 'RESTORE_VERIFY_FAILED' }, 'restore_verify_failed');
-      }
-      console.log('notes: restored one note');
-      return send(response, 200, { id, restored: true, contentSha256: backup.content_sha256, changed: willChange, beforeSha256: currentSha256 });
+      // 돌아온 값도 한 번 더 봅니다: 같은 id, 해시 모양, 기대한 종류의 응답일 때만 그대로 전달합니다.
+      const sha = dryRun ? data?.backup?.contentSha256 : data?.contentSha256;
+      const good = data && typeof data === 'object' && data.id === id && typeof sha === 'string' && /^[0-9a-f]{64}$/u.test(sha)
+        && (dryRun ? data.dryRun === true : data.restored === true);
+      if (!good) return deny(response, 502, { error: 'RESTORE_VERIFY_FAILED' }, 'restore_bad_reply');
+      console.log(dryRun ? 'notes: restore preview' : 'notes: restored one note');
+      return send(response, 200, data);
     });
   }
 

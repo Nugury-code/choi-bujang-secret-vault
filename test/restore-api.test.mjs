@@ -133,20 +133,28 @@ test('B가 변조된 자기 메모 한 건을 복원: 사본과 id·소유자·�
   const want = backupRow(original.B).content_sha256;
   assert.deepEqual(out.body, {
     id: B_NOTE, ownerId: USER_B, restored: true, contentSha256: want,
+    preview: {
+      backupVersion: { contentSha256: want, backedUpAt: null },
+      current: { exists: true, contentSha256: noteContentSha256('변조됨', '변조된 내용') },
+      willChange: { recreate: false, title: true, content: true },
+    },
     report: {
       backupVersion: { contentSha256: want, backedUpAt: null },
       before: { exists: true, contentSha256: noteContentSha256('변조됨', '변조된 내용') },
       changed: { recreate: false, title: true, content: true },
     },
   });
-  assert.deepEqual(Object.keys(out.body).sort(), ['contentSha256', 'id', 'ownerId', 'report', 'restored']);
+  assert.deepEqual(Object.keys(out.body).sort(), ['contentSha256', 'id', 'ownerId', 'preview', 'report', 'restored']);
   assert.ok(!JSON.stringify(out.body).includes('변조된 내용'));
   const row = live(B_NOTE);
   assert.equal(row.note_id, B_NOTE); assert.equal(row.owner_id, USER_B);
   assert.equal(noteContentSha256(row.title, row.content), tables.vault_notes_backup[0].content_sha256);
   assert.equal(JSON.stringify([live(A_NOTE), live(B_OTHER), tables.vault_notes_backup]), before);
   assert.equal(out.headers.get('cache-control'), 'no-store');
-  assert.deepEqual(state.calls, ['rpc:restore_one_note:run']);
+  // 순서: 먼저 쓰기 없는 확인·미리보기, 그다음에 복원.
+  assert.deepEqual(state.calls, ['rpc:restore_one_note:dry', 'rpc:restore_one_note:run']);
+  assert.equal(out.body.preview.backupVersion.contentSha256, out.body.contentSha256);
+  assert.equal(out.body.preview.willChange.content, true);
 });
 
 test('B가 삭제된 자기 메모 한 건을 복원: 같은 id·소유자로 다시 생기고 다른 행은 그대로', async () => {

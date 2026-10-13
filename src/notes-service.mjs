@@ -263,10 +263,11 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
       const id = rawId.toLowerCase();
       // 요청에 사본 대조 값이 실려 왔고 주소의 id·확인된 사용자와 어긋나면 DB를 부르기 전에 멈춥니다.
       if (pinConflicts(pin, { id, userId })) return finish('request_mismatch', 409, { error: 'BACKUP_MISMATCH' }, 'request_mismatch');
-      const { data, error } = await db.rpc('restore_one_note', {
-        p_note_id: id, p_owner_id: userId, p_dry_run: dryRun, p_expected: expectedCopy(pin),
-      });
-      if (error) {
+      // 순서(카드 문장 그대로): ① 사본이 있는지 → ② 사본을 다시 읽어 검증이 성공하는지 → ③ 실행 전에 버전과 바뀔 항목 보여 주기 → ④ 그다음에야 복원.
+      // ①②③은 쓰기 없는 미리보기 호출(p_dry_run=true) 하나가 맡고, 어느 하나라도 틀리면 여기서 멈춥니다(아무것도 쓰지 않음).
+      const call = (dry) => db.rpc('restore_one_note', { p_note_id: id, p_owner_id: userId, p_dry_run: dry, p_expected: expectedCopy(pin) });
+      // 오류 이름 → 응답. 멈춰야 하면 응답을 보내고 true를 돌려줍니다.
+      const stopOnError = async (error) => {
         const tag = typeof error.message === 'string' ? error.message.trim() : '';
         if (tag === 'BACKUP_NOT_FOUND') return finish('not_found', 404, { error: 'NOT_FOUND' }, 'backup_not_found_or_not_owner');
         if (tag === 'BACKUP_INTEGRITY_FAILED') return finish('backup_integrity', 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_hash_mismatch');
@@ -276,16 +277,30 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
         if (error.code === '23505') return finish('owner_conflict', 404, { error: 'NOT_FOUND' }, 'restore_owner_conflict');
         console.error('notes: write failed', error.code ?? 'unknown');
         return finish('write_failed', 502, { error: 'NOTES_WRITE_FAILED' }, 'write_failed');
-      }
-      // 돌아온 값도 한 번 더 봅니다: 같은 id, 해시 모양, 기대한 종류의 응답일 때만 그대로 전달합니다.
-      const sha = dryRun ? data?.backup?.contentSha256 : data?.contentSha256;
-      const good = data && typeof data === 'object' && data.id === id && typeof sha === 'string' && /^[0-9a-f]{64}$/u.test(sha)
-        && (dryRun ? data.dryRun === true : (data.restored === true && data.ownerId === userId));
+      };
+      const isSha = (v) => typeof v === 'string' && /^[0-9a-f]{64}$/u.test(v);
+      // ①②③ 사본 확인·검증·미리보기
+      const first = await call(true);
+      if (first.error) return stopOnError(first.error);
+      const pv = first.data;
+      const previewOk = pv && typeof pv === 'object' && pv.id === id && pv.dryRun === true && isSha(pv.backup?.contentSha256);
+      if (!previewOk) return finish('bad_reply', 502, { error: 'RESTORE_VERIFY_FAILED' }, 'restore_bad_reply');
+      // 실행 전에 보여 줄 내용: 사본 버전과 바뀔 항목(원문은 없음).
+      const preview = { backupVersion: pv.backup, current: pv.current, willChange: pv.willChange };
+      console.log('notes: restore preview ok');
+      if (dryRun) return finish('preview', 200, pv);
+      // ④ 복원. DB 함수가 쓰기 직전에 사본을 다시 읽어 검증하고, 쓴 뒤에도 다시 확인합니다. 틀리면 전체가 취소됩니다.
+      const second = await call(false);
+      if (second.error) return stopOnError(second.error);
+      const data = second.data;
+      // 돌아온 값도 한 번 더 봅니다: 같은 id·소유자, 해시 모양, 그리고 미리보기에서 본 사본 버전과 같은 해시일 때만 전달합니다.
+      const good = data && typeof data === 'object' && data.id === id && data.restored === true && data.ownerId === userId
+        && isSha(data.contentSha256) && data.contentSha256 === pv.backup.contentSha256;
       if (!good) return finish('bad_reply', 502, { error: 'RESTORE_VERIFY_FAILED' }, 'restore_bad_reply');
-      console.log(dryRun ? 'notes: restore preview' : 'notes: restored one note');
-      // 복구 응답의 최상위는 복구된 한 건의 id·소유자·내용 해시(와 restored 표시)뿐이고, 사본 버전·복구 직전 해시·바뀐 항목은 report 안에 따로 담깁니다. 미리보기는 DB 함수가 준 그대로입니다.
-      return finish(dryRun ? 'preview' : 'restored', 200, dryRun ? data : {
+      console.log('notes: restored one note');
+      return finish('restored', 200, {
         id: data.id, ownerId: data.ownerId, restored: true, contentSha256: data.contentSha256,
+        preview,
         ...(data.report && typeof data.report === 'object' ? { report: data.report } : {}),
       });
     });

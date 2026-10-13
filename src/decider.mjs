@@ -59,12 +59,11 @@ function recentlyVerified(request) {
 // - 표에 없는 method·route 조합과 경로 모양이 맞지 않는 요청은 모르는 경로로 보고 거부합니다.
 // - :id와 같은 깊이에는 기능 경로(export 같은 이름)를 두지 않고, 그런 이름이 자료 ID 자리에 오면 거부합니다.
 // - 강사 공지(instructor.notice) 수정은 계약에 강사 역할 값이 없어서(request.role 없음) 누구에게도 허용하지 않습니다.
+// - 목록(GET /notes)은 표에 없습니다. 목록은 쿼리로 어느 구역을 볼지 고를 수 있는데 판정기는 쿼리를 읽지 않으므로, 자료 ID가 있는 요청만 받습니다.
 // - 요청에는 메모의 주인 정보가 없어서 "자기 메모인지"는 여기서 가릴 수 없습니다. 그 검사는 최종 자료 API(소유자 검사, 남의 메모 404)가 합니다.
 const ZONE_ROUTES = Object.freeze({
-  'GET /notes': { resource: 'student.note', action: 'read' },
   'GET /notes/:id': { resource: 'student.note', action: 'read' },
   'PUT /notes/:id': { resource: 'student.note', action: 'update' },
-  'GET /api/notes': { resource: 'student.note', action: 'read' },
   'GET /api/notes/:id': { resource: 'student.note', action: 'read' },
   'PUT /api/notes/:id': { resource: 'student.note', action: 'update' },
   'PUT /notices/:id': { resource: 'instructor.notice', action: 'update' },

@@ -6,3 +6,5 @@ node_modules/
 public/aleph.json
 Claude outputs/ALEPH_방어전_작업로그.md
 public/vendor/
+xdr/deny-rules.json
+xdr/web-injection/deny-rules.json

@@ -67,6 +67,7 @@ function recentlyVerified(request) {
 const NOTICE_MARK = /^(notice|announcement|bulletin|instructor|teacher|staff|admin|class|course|lecture|material|syllabus|assignment|grade)/u;
 const RESERVED_IDS = Object.freeze(['export', 'import', 'search', 'list', 'all', 'new', 'bulk', 'download']);
 const ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
+const RESTORE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const BAD_PATH_CHARS = /[?#\\\s\u0000-\u001f]/u;
 const BAD_PIECE_CHARS = /[/\\\s?#\u0000-\u001f]/u;
 
@@ -87,6 +88,10 @@ function tokensOf(path) {
 function readShape(tokens) {
   if (!tokens) return null;
   if (tokens.some(token => NOTICE_MARK.test(token))) return { resource: 'instructor.notice', depth: tokens.length, id: null };
+  // 10단계: 사본에서 한 건을 되돌리는 경로 notes/:id/restore 한 가지만 세 칸 모양으로 인정합니다.
+  if (tokens[0] === 'notes' && tokens.length === 3 && tokens[2] === 'restore') {
+    return { resource: 'student.note', depth: 3, id: tokens[1], restore: true };
+  }
   if (tokens[0] !== 'notes' || tokens.length > 2) return null;
   return { resource: 'student.note', depth: tokens.length, id: tokens[1] ?? null };
 }
@@ -99,8 +104,12 @@ function zoneOf(request) {
   const byRoute = readShape(routeTokens);
   if (!byPath || !byRoute) return null;
   // 주소와 route가 말하는 자원·깊이가 서로 다르면 어느 쪽도 믿지 않습니다.
-  if (byPath.resource !== byRoute.resource || byPath.depth !== byRoute.depth) return null;
+  if (byPath.resource !== byRoute.resource || byPath.depth !== byRoute.depth || Boolean(byPath.restore) !== Boolean(byRoute.restore)) return null;
   if (byPath.resource === 'instructor.notice') return { resource: 'instructor.notice', action: 'update' };
+  if (byPath.restore) {
+    // 복구는 자료를 덮어쓰는 쓰기라서 POST 한 가지, UUID 한 건만 인정합니다(목록·여러 건·다른 동작은 모르는 경로).
+    return request.method === 'POST' && RESTORE_ID.test(byPath.id) ? { resource: 'student.note', action: 'restore' } : null;
+  }
   if (byPath.depth !== 2) return { resource: 'student.note', action: 'list' };
   const id = byPath.id;
   if (!ID_PATTERN.test(id) || RESERVED_IDS.includes(id)) return null;
@@ -122,5 +131,11 @@ export async function decide(request) {
     return respond(request, 'allow', 'approved', 'zone_rules');
   }
   if (zone.action === 'update') return respond(request, 'allow', 'approved', 'zone_rules');
+  // 10단계: 복구는 최근에 본인 확인(step_up)을 마친 요청만 허용하고, 아니면 추가 확인을 요구합니다(기준 시간은 7단계와 같은 짐작값).
+  if (zone.action === 'restore') {
+    return recentlyVerified(request)
+      ? respond(request, 'allow', 'approved', 'zone_rules')
+      : respond(request, 'step_up', 'step_up_required', 'step_up_required');
+  }
   return respond(request, 'deny', 'starter_not_ready', RULE_IDS[0]);
 }

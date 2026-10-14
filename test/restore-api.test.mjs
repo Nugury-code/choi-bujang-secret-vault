@@ -157,8 +157,15 @@ test('B가 변조된 자기 메모 한 건을 복원: 사본과 id·소유자·�
   const out = await postConfirmed(B_NOTE, asB);
   assert.equal(out.status, 200);
   const want = backupRow(original.B).content_sha256;
-  assert.deepEqual(out.body, { id: B_NOTE, ownerId: USER_B, contentSha256: want, restored: true });
-  assert.deepEqual(Object.keys(out.body).sort(), ['contentSha256', 'id', 'ownerId', 'restored']);
+  assert.deepEqual(out.body, {
+    id: B_NOTE, ownerId: USER_B, contentSha256: want, restored: true,
+    report: {
+      restoreVersion: { contentSha256: want, backedUpAt: BACKED_UP_AT },
+      before: { exists: true, contentSha256: noteContentSha256('변조됨', '변조된 내용') },
+      changed: { recreate: false, title: true, content: true },
+    },
+  });
+  assert.deepEqual(Object.keys(out.body).sort(), ['contentSha256', 'id', 'ownerId', 'report', 'restored']);
   assert.ok(!JSON.stringify(out.body).includes('변조된 내용'));
   const row = live(B_NOTE);
   assert.equal(row.note_id, B_NOTE); assert.equal(row.owner_id, USER_B);
@@ -240,9 +247,9 @@ test('사본 읽기가 실패하면 502, 응답과 로그에 키가 없고 아�
   assert.ok(!state.calls.some((call) => call.startsWith('update:') || call.startsWith('insert:')));
 });
 
-test('요청 본문에서는 confirm만 읽는다: 본문에 id·owner_id·role·dryRun·사본 값이 있어도 대상과 결과가 같다', async () => {
+test('요청 본문의 owner_id·role 같은 값은 무시한다: 대상과 결과가 같고 다른 메모는 그대로', async () => {
   Object.assign(live(B_NOTE), { title: '변조됨', content: '변조된 내용' });
-  const out = await postConfirmed(B_NOTE, asB, { id: B_OTHER, owner_id: USER_A, role: 'instructor', dryRun: true, backup: { title: '다른 제목', content: '다른 내용' } });
+  const out = await postConfirmed(B_NOTE, asB, { owner_id: USER_A, ownerId: USER_A, role: 'instructor', userId: USER_A, 아무거나: 1 });
   assert.equal(out.status, 200); assert.equal(out.body.restored, true);
   assert.equal(live(B_NOTE).title, original.B.title); assert.equal(live(B_NOTE).content, original.B.content);
   assert.equal(live(B_NOTE).owner_id, USER_B);
@@ -435,4 +442,63 @@ test('정책 사본 검증은 메모 사본 검증 뒤에 한다: 메모 사본�
   service = serviceWith({ policySnapshot: null });
   const out = await post('dddddddd-dddd-4ddd-8ddd-dddddddddddd', asB);
   assert.equal(out.status, 404);
+});
+
+// ---- 요청 본문: dryRun(미리보기만), 사본 대조 값(맞아야 진행, 복원 내용으로는 쓰지 않음) ----
+test('본문에 dryRun: true를 보내면 확인 코드 없이 미리보기만 오고 아무것도 쓰지 않는다 (정확히 true일 때만)', async () => {
+  Object.assign(live(B_NOTE), { title: '변조됨', content: '변조된 내용' });
+  const before = snapshotOf();
+  const out = await post(B_NOTE, asB, { body: { dryRun: true } });
+  assert.equal(out.status, 200); assert.equal(out.body.dryRun, true); assert.equal(out.body.restored, false);
+  assert.deepEqual(out.body.preview.changes, { recreate: false, title: true, content: true });
+  assert.equal(snapshotOf(), before);
+  assert.ok(!state.calls.some((call) => call.startsWith('update:') || call.startsWith('insert:') || call.startsWith('delete:')));
+  assert.ok(!JSON.stringify(out.body).includes('변조된 내용') && !JSON.stringify(out.body).includes('B 내용'));
+  for (const notTrue of ['true', 1, 'yes', null]) {
+    const other = await post(B_NOTE, asB, { body: { dryRun: notTrue } });
+    assert.equal(other.body.dryRun, undefined); assert.equal(other.body.confirmRequired, true);
+  }
+  assert.equal(snapshotOf(), before);
+  // dryRun: true와 틀린 확인 코드를 같이 보내도 쓰지 않는다.
+  assert.equal((await post(B_NOTE, asB, { body: { dryRun: true, confirm: '0000000000000000' } })).body.restored, false);
+  assert.equal(snapshotOf(), before);
+});
+
+test('본문의 id가 주소의 id와 다르거나 사본 값끼리 모순되면 DB를 부르기 전에 409로 멈춘다', async () => {
+  Object.assign(live(B_NOTE), { title: '변조됨' });
+  const before = snapshotOf();
+  for (const body of [{ id: B_OTHER }, { noteId: B_OTHER }, { backup: { title: 'a' }, snapshot: { title: 'b' } }]) {
+    state.calls.length = 0;
+    const out = await post(B_NOTE, asB, { body });
+    assert.equal(out.status, 409); assert.deepEqual(out.body, { error: 'BACKUP_MISMATCH' });
+    assert.deepEqual(state.calls, []);
+  }
+  assert.equal(snapshotOf(), before);
+  assert.ok(logged.some((l) => l.includes('request_mismatch')));
+});
+
+test('본문에 실린 사본 내용이 서버가 검증한 사본과 다르면 409로 멈추고 쓰지 않는다 (미리보기·복원 모두)', async () => {
+  Object.assign(live(B_NOTE), { title: '변조됨' });
+  const before = snapshotOf();
+  const wrong = { backup: { title: original.B.title, content: '다른 내용' } };
+  for (const extra of [{ dryRun: true }, {}]) {
+    const out = await post(B_NOTE, asB, { body: { ...wrong, ...extra } });
+    assert.equal(out.status, 409); assert.deepEqual(out.body, { error: 'BACKUP_MISMATCH' });
+  }
+  assert.equal(snapshotOf(), before);
+  assert.ok(!state.calls.some((call) => call.startsWith('update:') || call.startsWith('insert:') || call.startsWith('delete:')));
+  // 확인 코드가 맞아도, 본문의 사본 값이 틀리면 복원되지 않는다.
+  const code = (await post(B_NOTE, asB)).body.preview.confirmCode;
+  const blocked = await post(B_NOTE, asB, { body: { ...wrong, confirm: code } });
+  assert.equal(blocked.status, 409);
+  assert.equal(snapshotOf(), before);
+});
+
+test('본문의 사본 내용이 서버 사본과 같으면 진행하고, 복원 내용은 서버 사본에서만 온다', async () => {
+  Object.assign(live(B_NOTE), { title: '변조됨', content: '변조된 내용' });
+  const body = { id: B_NOTE.toUpperCase(), backup: { title: original.B.title, content: original.B.content }, owner: USER_B };
+  const out = await postConfirmed(B_NOTE, asB, body);
+  assert.equal(out.status, 200); assert.equal(out.body.restored, true);
+  assert.equal(live(B_NOTE).title, original.B.title); assert.equal(live(B_NOTE).content, original.B.content);
+  assert.equal(noteContentSha256(live(B_NOTE).title, live(B_NOTE).content), tables.vault_notes_backup[0].content_sha256);
 });

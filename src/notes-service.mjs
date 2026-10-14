@@ -5,6 +5,7 @@ import defaultPolicySnapshot from '../policy/safe-policy.snapshot.json' with { t
 import { RULE_IDS } from './decider.mjs';
 import { noteContentSha256 } from './note-hash.mjs';
 import { planPolicyRestore, readCurrentPolicy } from './policy-diff.mjs';
+import { expectedCopy, pinConflicts, readPin } from './restore-pin.mjs';
 import { clientIp, createMemoryLimiter, durableHit, hashKey, tooMany } from './rate-limit.mjs';
 import { createLoginVerifier } from './verify-login.mjs';
 import { resourceIdFor, STUDENT_NOTE } from './resources.mjs';
@@ -240,12 +241,19 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
   //       ③ 지금 메모 읽기 ④ 확인 코드가 없거나 틀리면 미리보기만 돌려주고 끝
   //       ⑤ 쓰기 직전에 검증한 사본을 다시 읽어 같은지 확인(다르면 409로 멈춤) 뒤 그 한 건만 그 사본 내용으로 쓰기
   //       ⑥ 쓴 뒤 다시 읽어 ID·소유자·내용 해시가 사본과 같은지 대조(다르면 이 한 건을 쓰기 전 모습으로 되돌리고 502).
-  // 소유자는 로그인 토큰으로 확인된 사용자 ID로만 정합니다. 요청 본문에서는 confirm 하나만 읽고, 나머지(id·owner_id·사본 값 등)는 무시합니다.
+  // 소유자는 로그인 토큰으로 확인된 사용자 ID로만 정합니다. 요청 본문에서는 confirm, dryRun(true면 미리보기만), 사본 대조 값만 읽습니다.
+  //   대조 값이 주소의 id나 서버가 검증한 사본과 다르면 409 BACKUP_MISMATCH로 멈춥니다. 나머지(owner_id·role 등)는 무시합니다.
   async function handleRestore(request, response) {
     return run(request, response, ['GET', 'POST'], async ({ db, userId }) => {
       const rawId = restoreIdFromRequest(request);
       if (!UUID.test(rawId)) return deny(response, 404, { error: 'NOT_FOUND' }, 'bad_id');
       const id = rawId.toLowerCase();
+      // 본문에서는 confirm, dryRun(정확히 true), 사본 대조 값(src/restore-pin.mjs)만 읽습니다. 나머지(owner_id·role 등)는 무시합니다.
+      // 요청에 사본 대조 값이 실려 왔고 주소의 id와 어긋나거나 서로 모순되면 DB를 부르기 전에 멈춥니다.
+      const body = parseBody(request);
+      const dryRun = body?.dryRun === true;
+      const pin = readPin(body);
+      if (pinConflicts(pin, { id })) return deny(response, 409, { error: 'BACKUP_MISMATCH' }, 'request_mismatch');
       const isSha = (v) => typeof v === 'string' && /^[0-9a-f]{64}$/u.test(v);
       const shaOf = (row) => (row ? noteContentSha256(row.title, row.content) : null);
       // ① 사본 읽기: 없거나 주인이 다르면 같은 404(남의 사본이 있는지 알려 주지 않음).
@@ -261,6 +269,12 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
       //    운영 정책(src/decider.mjs, aleph.config.json)은 읽기만 하며 바꾸지 않습니다. (프롬프트 45·46의 정책 사본을 복원 경로에 이은 것은 내가 정한 값: 짐작)
       const policyPlan = planPolicyRestore({ snapshot: policySnapshot, current: readCurrentPolicy({ ruleIds: RULE_IDS, config }) });
       if (!policyPlan.ok) return deny(response, 409, { error: 'POLICY_SNAPSHOT_INVALID' }, 'policy_snapshot_invalid');
+      // 요청이 사본 내용을 같이 보냈다면(확인해 달라는 값) 서버가 검증한 사본과 같아야 합니다. 다르면 복원하지 않고 멈춥니다.
+      // 이 값은 대조에만 쓰고 복원할 내용으로는 쓰지 않습니다. 복원 내용은 서버가 읽어 검증한 사본뿐입니다. (요청 모양은 문서에 없어 이름은 내가 정한 짐작)
+      const want = expectedCopy(pin);
+      if (want && ((typeof want.title === 'string' && want.title !== copy.title) || (typeof want.content === 'string' && want.content !== copy.content))) {
+        return deny(response, 409, { error: 'BACKUP_MISMATCH' }, 'request_mismatch');
+      }
       // ③ 지금 모습 읽기(미리보기와 쓰기가 같이 씁니다). ⑤ 쓰기는 내 메모가 있으면 그 행의 제목·본문만 사본 내용으로, 없으면 같은 id·소유자로 다시 만듭니다.
       const live = await db.from('vault_notes').select(COLUMNS).eq('note_id', id).eq('owner_id', userId).maybeSingle();
       if (live.error) { console.error('notes: read failed', live.error.code ?? 'unknown'); return deny(response, 502, { error: 'NOTES_READ_FAILED' }, 'live_read_failed'); }
@@ -281,8 +295,10 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
         confirmCode,
       };
       if (request.method === 'GET') return send(response, 200, { id: copy.note_id, ownerId: copy.owner_id, preview });
+      // 본문에 dryRun: true가 있으면 확인 코드 없이도 미리보기만 돌려주고 아무것도 쓰지 않습니다. (이름 dryRun은 내가 정한 짐작)
+      if (dryRun) return send(response, 200, { id: copy.note_id, ownerId: copy.owner_id, dryRun: true, restored: false, preview });
       // ④ 확인 코드가 없거나 미리본 뒤 상태가 바뀌어 맞지 않으면 복원하지 않고 미리보기를 다시 보여 줍니다.
-      if (parseBody(request)?.confirm !== confirmCode) {
+      if (body?.confirm !== confirmCode) {
         return send(response, 200, { id: copy.note_id, ownerId: copy.owner_id, restored: false, confirmRequired: true, preview });
       }
       // ⑤ 쓰기 직전에 검증한 사본을 한 번 더 읽어, 처음 읽어 검증한 사본과 같고 해시도 여전히 맞는지 봅니다. 다르면 쓰지 않고 멈춥니다.
@@ -314,7 +330,11 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
           : await db.from('vault_notes').delete().eq('note_id', id).eq('owner_id', userId);
         return deny(response, 502, { error: 'RESTORE_VERIFY_FAILED' }, undone.error ? 'restore_verify_failed_undo_failed' : 'restore_verify_failed_undone');
       }
-      return send(response, 200, { id: row.note_id, ownerId: row.owner_id, contentSha256: copy.content_sha256, restored: true });
+      // report: 복원 전후 요약(원문 없음). 이름 report는 내가 정한 짐작.
+      return send(response, 200, {
+        id: row.note_id, ownerId: row.owner_id, contentSha256: copy.content_sha256, restored: true,
+        report: { restoreVersion: preview.restoreVersion, before: preview.current, changed: preview.changes },
+      });
     });
   }
 

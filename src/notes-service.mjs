@@ -1,7 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 import config from '../aleph.config.json' with { type: 'json' };
+import defaultPolicySnapshot from '../policy/safe-policy.snapshot.json' with { type: 'json' };
+import { RULE_IDS } from './decider.mjs';
 import { noteContentSha256 } from './note-hash.mjs';
+import { planPolicyRestore, readCurrentPolicy } from './policy-diff.mjs';
 import { clientIp, createMemoryLimiter, durableHit, hashKey, tooMany } from './rate-limit.mjs';
 import { createLoginVerifier } from './verify-login.mjs';
 import { resourceIdFor, STUDENT_NOTE } from './resources.mjs';
@@ -90,7 +93,7 @@ const defaultCreateDb = (url, key) => createClient(url, key, {
 });
 
 // createDb는 시험에서 가짜 DB를 끼우기 위한 자리입니다. 실제 서버는 기본값(Supabase 공식 SDK)을 씁니다.
-export function createNotesService({ loginConfig = config, verifierOptions = {}, createDb = defaultCreateDb, memory = createMemoryLimiter() } = {}) {
+export function createNotesService({ loginConfig = config, verifierOptions = {}, createDb = defaultCreateDb, memory = createMemoryLimiter(), policySnapshot = defaultPolicySnapshot } = {}) {
   let cached = null;
   function verifierFor(secretKey) {
     if (!cached || cached.secretKey !== secretKey) {
@@ -233,6 +236,7 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
   //   확인 코드는 "복원할 버전의 해시 + 지금 메모의 해시"로 만든 값이라, 미리본 뒤 메모나 사본이 바뀌면 맞지 않아 다시 미리보기부터 합니다. (코드 방식·이름 confirm은 내가 정한 값: 짐작)
   //   GET은 같은 미리보기를 쓰기 없이 보여 주기만 합니다.
   // 순서: ① 사본 읽기(id와 소유자가 같은 행만) ② 사본의 내용 해시를 다시 계산해 저장된 해시와 대조(다르면 중단)
+  //       ②-2 정책 사본도 검증(없거나 검증 실패면 중단)하고 복원할 정책 버전과 바뀔 항목을 미리보기에 담음(읽기만)
   //       ③ 지금 메모 읽기 ④ 확인 코드가 없거나 틀리면 미리보기만 돌려주고 끝
   //       ⑤ 쓰기 직전에 검증한 사본을 다시 읽어 같은지 확인(다르면 409로 멈춤) 뒤 그 한 건만 그 사본 내용으로 쓰기
   //       ⑥ 쓴 뒤 다시 읽어 ID·소유자·내용 해시가 사본과 같은지 대조(다르면 이 한 건을 쓰기 전 모습으로 되돌리고 502).
@@ -253,6 +257,10 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
       if (!copy || copy.note_id !== id || copy.owner_id !== userId) return deny(response, 404, { error: 'NOT_FOUND' }, 'backup_not_found_or_not_owner');
       // ② 대조: 사본의 제목·본문으로 내용 해시를 다시 계산해 저장된 해시와 같아야 합니다.
       if (!isSha(copy.content_sha256) || shaOf(copy) !== copy.content_sha256) return deny(response, 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_hash_mismatch');
+      // ②-2 정책 사본(policy/safe-policy.snapshot.json)도 같은 방식으로 검증합니다(모양·지문·비밀값 모양). 없거나 검증에 실패하면 복원하지 않고 멈춥니다.
+      //    운영 정책(src/decider.mjs, aleph.config.json)은 읽기만 하며 바꾸지 않습니다. (프롬프트 45·46의 정책 사본을 복원 경로에 이은 것은 내가 정한 값: 짐작)
+      const policyPlan = planPolicyRestore({ snapshot: policySnapshot, current: readCurrentPolicy({ ruleIds: RULE_IDS, config }) });
+      if (!policyPlan.ok) return deny(response, 409, { error: 'POLICY_SNAPSHOT_INVALID' }, 'policy_snapshot_invalid');
       // ③ 지금 모습 읽기(미리보기와 쓰기가 같이 씁니다). ⑤ 쓰기는 내 메모가 있으면 그 행의 제목·본문만 사본 내용으로, 없으면 같은 id·소유자로 다시 만듭니다.
       const live = await db.from('vault_notes').select(COLUMNS).eq('note_id', id).eq('owner_id', userId).maybeSingle();
       if (live.error) { console.error('notes: read failed', live.error.code ?? 'unknown'); return deny(response, 502, { error: 'NOTES_READ_FAILED' }, 'live_read_failed'); }
@@ -265,6 +273,11 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
         restoreVersion: { contentSha256: copy.content_sha256, backedUpAt: copy.backed_up_at ?? null },
         current: { exists: Boolean(now), contentSha256: shaOf(now) },
         changes, willChange: changes.recreate || changes.title || changes.content,
+        // 정책 사본: 복원하면 바뀔 항목을 보여 줄 뿐 운영 정책은 바꾸지 않습니다(willChange는 항상 false).
+        policy: {
+          restoreVersion: policyPlan.restoreVersion, changeCount: policyPlan.changeCount, willChange: false,
+          step: policyPlan.step, ruleIds: policyPlan.ruleIds, allowedRoutes: policyPlan.allowedRoutes,
+        },
         confirmCode,
       };
       if (request.method === 'GET') return send(response, 200, { id: copy.note_id, ownerId: copy.owner_id, preview });

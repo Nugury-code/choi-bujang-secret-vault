@@ -229,7 +229,7 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
   // 10단계 /api/notes/:id/restore : POST. 비공개 사본 표(vault_notes_backup)에서 "지정한 메모 한 건"만 되살립니다.
   // 프롬프트 47대로: 지정한 한 건(주소의 id)만, 사본과 ID·소유자·내용 해시를 대조하고, 다른 메모는 건드리지 않습니다.
   // 순서: ① 사본 읽기(id와 소유자가 같은 행만) ② 사본의 내용 해시를 다시 계산해 저장된 해시와 대조(다르면 중단)
-  //       ③ 그 한 건만 사본 내용으로 쓰기 ④ 쓴 뒤 다시 읽어 ID·소유자·내용 해시가 사본과 같은지 대조(다르면 502).
+  //       ③ 그 한 건만 사본 내용으로 쓰기 ④ 쓴 뒤 다시 읽어 ID·소유자·내용 해시가 사본과 같은지 대조(다르면 이 한 건을 쓰기 전 모습으로 되돌리고 502).
   // 요청 본문은 읽지 않습니다. 소유자는 로그인 토큰으로 확인된 사용자 ID로만 정합니다.
   async function handleRestore(request, response) {
     return run(request, response, ['GET', 'POST'], async ({ db, userId }) => {
@@ -264,7 +264,8 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
           },
         });
       }
-      const wrote = live.data
+      const before = live.data; // 쓰기 전 모습: 쓴 뒤 확인이 실패하면 이 모습으로 되돌립니다.
+      const wrote = before
         ? await db.from('vault_notes').update({ title: copy.title, content: copy.content }).eq('note_id', id).eq('owner_id', userId)
         : await db.from('vault_notes').insert({ note_id: id, owner_id: userId, title: copy.title, content: copy.content });
       if (wrote.error) {
@@ -272,10 +273,14 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
         return deny(response, 502, { error: 'NOTES_WRITE_FAILED' }, 'write_failed');
       }
       // ④ 쓴 뒤 다시 읽어 ID·소유자·내용 해시가 사본과 같은지 대조합니다.
+      //    같지 않으면 틀린 값이 남지 않도록 이 한 건만 쓰기 전 모습으로 되돌리고(원래 없었으면 지움) 502로 알립니다. (되돌리기는 내가 정한 값: 짐작)
       const after = await db.from('vault_notes').select(COLUMNS).eq('note_id', id).eq('owner_id', userId).maybeSingle();
       const row = after.data;
       if (after.error || !row || row.note_id !== copy.note_id || row.owner_id !== copy.owner_id || shaOf(row) !== copy.content_sha256) {
-        return deny(response, 502, { error: 'RESTORE_VERIFY_FAILED' }, 'restore_verify_failed');
+        const undone = before
+          ? await db.from('vault_notes').update({ title: before.title, content: before.content }).eq('note_id', id).eq('owner_id', userId)
+          : await db.from('vault_notes').delete().eq('note_id', id).eq('owner_id', userId);
+        return deny(response, 502, { error: 'RESTORE_VERIFY_FAILED' }, undone.error ? 'restore_verify_failed_undo_failed' : 'restore_verify_failed_undone');
       }
       return send(response, 200, { id: row.note_id, ownerId: row.owner_id, contentSha256: copy.content_sha256, restored: true });
     });

@@ -289,3 +289,26 @@ test('복원 뒤: B의 A 메모 요청은 여전히 거부되고, A의 정상 �
   assert.equal((await preview(A_NOTE, asB)).status, 404);
   assert.equal(JSON.stringify(live(A_NOTE)), JSON.stringify(original.A));
 });
+
+// ---- 쓴 뒤 확인이 실패하면 틀린 값이 남지 않도록 쓰기 전 모습으로 되돌린다 ----
+test('쓴 뒤 확인이 실패하면 이 한 건을 쓰기 전 모습으로 되돌리고 502로 알린다 (다른 메모는 그대로)', async () => {
+  Object.assign(live(B_NOTE), { title: '변조됨', content: '변조된 내용' });
+  state.sloppyWrite = true; // 가짜 DB가 사본 내용을 쓰려 할 때 엉뚱한 값을 저장하게 만든다
+  const others = JSON.stringify([live(A_NOTE), live(B_OTHER), tables.vault_notes_backup]);
+  const out = await post(B_NOTE, asB);
+  assert.equal(out.status, 502); assert.deepEqual(out.body, { error: 'RESTORE_VERIFY_FAILED' });
+  assert.equal(live(B_NOTE).title, '변조됨'); assert.equal(live(B_NOTE).content, '변조된 내용'); assert.equal(live(B_NOTE).owner_id, USER_B);
+  assert.notEqual(live(B_NOTE).content, '엉뚱하게 써 버림');
+  assert.equal(JSON.stringify([live(A_NOTE), live(B_OTHER), tables.vault_notes_backup]), others);
+  assert.ok(logged.some((l) => l.includes('restore_verify_failed_undone')));
+  assert.ok(!JSON.stringify([out.body, logged]).includes('엉뚱하게'));
+});
+
+test('삭제돼 있던 메모를 다시 만든 뒤 확인이 실패하면 만든 행을 지워 원래대로(없음) 돌린다', async () => {
+  tables.vault_notes.splice(tables.vault_notes.indexOf(live(B_NOTE)), 1);
+  state.sloppyWrite = true;
+  const out = await post(B_NOTE, asB);
+  assert.equal(out.status, 502);
+  assert.equal(live(B_NOTE), undefined);
+  assert.equal(tables.vault_notes.length, 2);
+});

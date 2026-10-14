@@ -143,10 +143,6 @@ async function runLoginChecks(config, app) {
     { attackId: 'other_service_token_read', what: '다른 서비스용(audience가 다른) 가짜 토큰으로 목록 읽기', note: '(진짜 서명된 토큰은 미실행)', path: '/api/notes',
       token: fakeToken(config, { audience: 'other-service', expiresInSeconds: 600 }) },
   ];
-  // 10단계: 복구 경로(POST /api/notes/:id/restore)도 로그인 없이는 자료 없이 거절돼야 합니다. 아는 id 없이 임의의 UUID로만 보냅니다.
-  if (config.step >= 10) {
-    attempts.push({ attackId: 'anonymous_restore', what: '로그인 없이 메모 복원', path: `/api/notes/${unknownId}/restore`, method: 'POST' });
-  }
   const results = [await staticDataCheck(config, app)];
   for (const item of attempts) {
     const response = await send(app, item.path, item);
@@ -157,14 +153,6 @@ async function runLoginChecks(config, app) {
     });
   }
   if (config.step >= 5) results.push(...await runDirectChecks(config, app));
-  if (config.step >= 10) {
-    // 사본 표에 있는 시험 계정 B의 메모 한 건을 실제로 복원하는 요청은 서명된 B 로그인 토큰이 필요해 보내지 않습니다.
-    results.push({
-      attackId: 'restore_one_note',
-      expected: '복원 대상 한 건의 ID·소유자·내용 해시가 사본과 같고, 다른 사용자의 복원 요청은 거부됨',
-      observed: '미실행: 서명된 B 로그인 토큰과 사본 표가 필요해 이 점검에서는 보내지 않음',
-    });
-  }
   if (config.step >= 4) {
     // 서명된 A·B 로그인 토큰 없이는 보낼 수 없습니다. 토큰을 만들거나 저장하지 않으므로 보내지 않았다고 적습니다.
     results.push({

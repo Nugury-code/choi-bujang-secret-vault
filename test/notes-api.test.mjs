@@ -428,7 +428,7 @@ test('aleph.config.json: identityProvider에 비밀이 없고 allowedRoutes가 �
   assert.deepEqual(Object.keys(STUDENT).sort(), ['audience', 'issuer', 'jwksUrl']);
   assert.ok(!/sb_secret_|service_role|eyJ/u.test(JSON.stringify(STUDENT)));
   assert.deepEqual([...config.allowedRoutes].sort(), [
-    'DELETE /api/notes/:id', 'GET /api/notes', 'GET /api/notes/:id', 'POST /api/auth/login', 'POST /api/auth/logout',
+    'DELETE /api/notes/:id', 'GET /api/notes', 'GET /api/notes/:id', 'GET /api/notes/:id/restore', 'POST /api/auth/login', 'POST /api/auth/logout',
     'POST /api/auth/refresh', 'POST /api/notes', 'POST /api/notes/:id/restore', 'PUT /api/notes/:id',
   ]);
 });

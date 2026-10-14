@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 // The student changes this check as each stage adds an attack to the same app.
 // Never return tokens, private keys, real names, or note bodies.
 export async function runAttackChecks(config) {
-  if (![1, 2, 3, 4, 5, 6, 7, 8, 9, 10].includes(config.step)) throw new Error('이 단계의 공격 점검을 src/attack-check.mjs에 구현해 주세요.');
+  if (![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].includes(config.step)) throw new Error('이 단계의 공격 점검을 src/attack-check.mjs에 구현해 주세요.');
   let app;
   try {
     app = new URL(config.publicAppUrl);
@@ -147,6 +147,10 @@ async function runLoginChecks(config, app) {
   if (config.step >= 10) {
     attempts.push({ attackId: 'anonymous_restore', what: '로그인 없이 메모 복원', path: `/api/notes/${unknownId}/restore`, method: 'POST' });
   }
+  // 11단계: 기기 승인 요청 경로(POST /api/device)도 로그인 없이는 거절돼야 합니다.
+  if (config.step >= 11) {
+    attempts.push({ attackId: 'anonymous_device_request', what: '로그인 없이 기기 승인 요청', path: '/api/device', method: 'POST', body: {} });
+  }
   const results = [await staticDataCheck(config, app)];
   for (const item of attempts) {
     const response = await send(app, item.path, item);
@@ -163,6 +167,14 @@ async function runLoginChecks(config, app) {
       attackId: 'restore_backup_note',
       expected: '복원 대상 한 건의 ID·소유자·내용 해시가 사본과 같고, 다른 사용자의 복원 요청은 거부됨',
       observed: '미실행: 서명된 B 로그인 토큰과 사본 표가 필요해 이 점검에서는 보내지 않음',
+    });
+  }
+  if (config.step >= 11) {
+    // 승인 요청 → 주인의 승인 → 승인 뒤 자료 열기는 로그인 토큰과 주인의 Supabase 승인이 필요해 보내지 않습니다.
+    results.push({
+      attackId: 'device_approval_flow',
+      expected: '승인 전에는 자료가 화면에 없고, 서버가 등록 기기로 확인한(approved) 뒤에만 기존 화면이 열림',
+      observed: '미실행: 서명된 로그인 토큰과 주인의 승인이 필요해 이 점검에서는 보내지 않음',
     });
   }
   if (config.step >= 4) {

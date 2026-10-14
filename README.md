@@ -356,6 +356,29 @@ commit;
 4. Supabase 표와 그 안의 자료는 지우거나 바꾸지 않습니다. 코드만 되돌립니다.
 5. 1단계 시점으로 코드를 되돌리면 공개 `data.json`에 가상 메모가 다시 들어갈 수 있으니, 되돌린 뒤 `/data.json`의 `notes`가 비어 있는지 다시 확인합니다.
 
+### 11단계: 기기 승인을 요청하고, 승인된 기기에서만 자료실이 열립니다
+
+설치형 웹앱 설정(manifest)과 기기 승인 화면을 붙였습니다. 따로 설치하는 접속 프로그램은 없습니다. 앱을 설치했다는 표시만으로 기기 확인이 끝났다고 보지 않습니다.
+
+- 설치형 웹앱 설정: `public/manifest.webmanifest`(앱 이름 「BYTE BACK 자료실」, 설치 창 모드). `index.html`에서 연결하고, `vercel.json`의 보안 설정(CSP)에는 `manifest-src 'self'` 한 줄만 더했습니다. 서비스 워커는 만들지 않았고, 아이콘 파일은 두지 않았습니다.
+- 오프라인 안내: 브라우저가 연결이 끊겼다고 알리면 화면에 "오프라인입니다…" 안내가 뜨고 연결이 돌아오면 사라집니다.
+- 기기 승인 화면(`index.html`·`app.js`의 「기기 승인」 칸): 로그인하면 「기기 승인 요청」 단추가 나옵니다. 누르면 이 기기의 키 한 쌍(ECDSA P-256)을 만들고, 공개 키와 "지금 요청"에 한 서명을 `POST /api/device`로 보냅니다. 개인 키는 꺼낼 수 없게 만들고 서버로 보내지 않으며, 이 페이지의 메모리에만 있고 브라우저 저장소(localStorage·sessionStorage·IndexedDB·쿠키)에는 쓰지 않습니다.
+- 서버(`src/device-service.mjs`, `api/device/index.js`): 로그인 토큰을 검사한 뒤 서명을 확인하고(공개 키의 주인이 지금 요청했는지), 표 `device_requests`(`supabase/007_device_requests.sql`)에 `pending`(대기)으로만 줄을 넣습니다. 서버 전용 역할은 이 표에서 읽기와 새 줄 추가만 할 수 있고 status를 정하거나 고치거나 지울 수 없습니다. `approved`(승인)로 바꾸는 일은 주인이 Supabase SQL Editor에서 직접 합니다. 응답은 `{ status }` 하나(`pending`·`approved`·`rejected`)뿐입니다.
+- 승인 전: 화면은 자료를 서버에 요청하지도 보여 주지도 않고 메모 추가 칸도 숨깁니다. 서버가 `approved`라고 답한 뒤에만 기존 자료실(목록·추가·수정·삭제)이 열립니다. 요청 단추만으로는 권한이 생기지 않습니다.
+- 시험: `npm run test:device`(가짜 DB 기준 9개: 서명 위조·오래된 서명·남의 공개 키 거부, 대기→승인 전환, 다른 계정 분리, 본문의 status·owner_id 무시, 응답·로그에 비밀 없음, 횟수 제한, 화면 코드의 저장소 미사용·승인 전 차단). 클라우드에서 가짜 서버와 실제 브라우저(보안 설정 포함)로 로그인 → 요청 → 대기 → 승인 → 자료 표시까지 확인했습니다.
+- 다시 실행하는 방법: Supabase SQL Editor에서 `supabase/007_device_requests.sql`을 먼저 실행합니다(마지막 확인 줄에서 `server_can_set_status`·`server_can_update`·`server_can_delete`·`anon_can_select`·`authenticated_can_select`가 false). 배포 뒤 로그인 → 「기기 승인 요청」 → 대기가 뜨면 `select id, status from public.device_requests order by id desc;`로 번호를 보고 `update public.device_requests set status = 'approved' where id = 번호;`를 실행한 뒤 「승인 상태 확인」을 누릅니다.
+- 저장점 정리: `aleph.config.json`의 `step`을 11로 올리고 허용 경로에 `POST /api/device`를 더했습니다(11개). `src/attack-check.mjs`가 11단계를 받도록 하고 `anonymous_device_request`(로그인 없이 `POST /api/device`가 401로 거절되는지)를 실제로 보냅니다. `device_approval_flow`는 미실행으로 적습니다. `src/decider.mjs`와 `RULE_IDS`는 고치지 않았고 1~10단계의 서버 코드와 요청 방식도 그대로입니다.
+
+**이번 단계에서 하지 않은 것·한계**
+
+- 서버 API `/api/notes` 등은 건드리지 않았습니다(이미 통과한 단계를 지키려는 선택, 내가 정한 값: 짐작). 그래서 화면을 거치지 않고 `/api/notes`를 직접 부르는 것은 이 단계에서 막지 못합니다.
+- 요청마다 서명을 붙여 서버가 경로·본문 변경을 검증하는 부분은 만들지 않았습니다(프롬프트에 없음).
+- 기기 키를 브라우저 저장소에 둘 수 없어서, 새로고침하거나 다시 로그인하면 새 기기로 보고 다시 승인해야 합니다.
+- 심판이 승인 상태를 어떻게 만들어 시험하는지는 문서에 없습니다. 이 방식에서는 승인이 주인의 Supabase 작업이라 심판이 요청해도 대기로 남을 수 있습니다.
+- 표 이름 `device_requests`, 서명 방식, 서명 허용 시간 60초, 요청 횟수 한도, 승인 주체를 주인으로 정한 것, 앱 이름은 내가 정한 값(짐작)입니다. 허용 경로 `POST /api/device`를 심판이 받아 주는지는 확인하지 못했습니다.
+- 브라우저가 실제로 "설치" 항목을 띄우는지(아이콘을 두지 않음)와 `manifest-src 'self'` 한 줄이 꼭 필요한지는 브라우저로 확인하지 못했습니다.
+- 배포 환경에서의 실행, 사용자 PC의 `npm run test:device`, 심판의 11단계 판정은 아직 없습니다.
+
 ## 보너스 xdr-01 저장점: 무차별 로그인 공격(brute-force)
 
 5단계까지의 사이트와는 별개인 보너스 작전 「무차별 로그인 공격을 잡아 냅니다」의 `xdr/brute-force/` 폴더입니다. 경보는 수업용 가상 자료(문서용 주소 대역, `user01` 같은 계정)이고 실제 로그가 아닙니다.

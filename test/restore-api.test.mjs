@@ -35,6 +35,14 @@ const fakeSupabase = { auth: { async getClaims(token) {
 function makeFakeDb(tables, state) {
   return {
     from(name) {
+      if (name === 'restore_audit') {
+        // 감사 기록 표: 줄 추가만 흉내 냅니다. 읽기·수정·삭제를 부르면 시험이 실패합니다.
+        return { insert(row) {
+          state.auditOps.push('insert');
+          if (state.auditFails) return Promise.resolve({ data: null, error: { code: 'PGRST205', message: `secret ${FAKE_KEY}` } });
+          state.audit.push({ ...row }); return Promise.resolve({ data: null, error: null });
+        } };
+      }
       if (name !== 'vault_notes' && name !== 'vault_notes_backup') throw new Error(`예상 밖의 표: ${name}`);
       const filters = [];
       let op = 'select';
@@ -105,11 +113,11 @@ function post(id, headers, extra = {}) {
   const request = { method: 'POST', headers, url: `/api/notes/${id}/restore`, ...extra };
   return service.handleRestore(request, response).then(() => out);
 }
-// 사용자가 정한 흐름: 복원 요청 → 미리보기와 확인 코드만 옴(아무것도 안 바뀜) → 확인 코드를 붙여 다시 요청 → 복원.
+// 미리보기(GET)에서 확인 코드를 받아 붙여 POST하는 흐름. 코드 없이 POST만 해도 복원됩니다.
 // 두 번째 요청의 DB 호출 순서만 state.calls에 남깁니다.
 async function postConfirmed(id, headers, body = {}) {
-  const first = await post(id, headers, { body });
-  assert.equal(first.status, 200); assert.equal(first.body.restored, false); assert.equal(first.body.confirmRequired, true);
+  const first = await preview(id, headers);
+  assert.equal(first.status, 200); assert.ok(first.body.preview.confirmCode);
   state.calls.length = 0;
   return post(id, headers, { body: { ...body, confirm: first.body.preview.confirmCode } });
 }
@@ -136,7 +144,7 @@ beforeEach(() => {
     vault_notes: [{ ...original.A }, { ...original.B }, { ...original.B2 }],
     vault_notes_backup: [backupRow(original.B)],
   };
-  state = { calls: [], writeFails: false, readFails: false, driftOnReread: false, sloppyWrite: false, backupReads: 0, writes: [] };
+  state = { audit: [{ outcome: 'old-1' }, { outcome: 'old-2' }], auditOps: [], auditFails: false, calls: [], writeFails: false, readFails: false, driftOnReread: false, sloppyWrite: false, backupReads: 0, writes: [] };
   service = createNotesService({ verifierOptions: { supabaseClient: fakeSupabase }, createDb: () => makeFakeDb(tables, state) });
 });
 afterEach(() => {
@@ -157,8 +165,9 @@ test('B가 변조된 자기 메모 한 건을 복원: 사본과 id·소유자·�
   const out = await postConfirmed(B_NOTE, asB);
   assert.equal(out.status, 200);
   const want = backupRow(original.B).content_sha256;
-  assert.deepEqual(out.body, { id: B_NOTE, ownerId: USER_B, contentSha256: want, restored: true });
-  assert.deepEqual(Object.keys(out.body).sort(), ['contentSha256', 'id', 'ownerId', 'restored']);
+  assert.deepEqual({ ...out.body, preview: undefined }, { id: B_NOTE, ownerId: USER_B, contentSha256: want, restored: true, preview: undefined });
+  assert.deepEqual(Object.keys(out.body).sort(), ['contentSha256', 'id', 'ownerId', 'preview', 'restored']);
+  assert.equal(out.body.preview.restoreVersion.contentSha256, want); assert.equal(out.body.preview.changes.content, true);
   assert.ok(!JSON.stringify(out.body).includes('변조된 내용'));
   const row = live(B_NOTE);
   assert.equal(row.note_id, B_NOTE); assert.equal(row.owner_id, USER_B);
@@ -306,17 +315,16 @@ test('복원 뒤: B의 A 메모 요청은 여전히 거부되고, A의 정상 �
 });
 
 // ---- 확인 흐름: 복원 요청은 먼저 미리보기만 보여 주고, 확인 코드를 붙여야 복원된다 ----
-test('확인 코드 없이 복원을 요청하면 미리보기와 확인 코드만 오고 아무것도 바뀌지 않는다', async () => {
+test('확인 코드 없이 복원을 한 번만 요청해도 그 한 건이 복원되고, 응답에 복원한 버전·바뀐 항목이 함께 온다', async () => {
   Object.assign(live(B_NOTE), { title: '변조됨', content: '변조된 내용' });
-  const before = snapshotOf();
+  const others = JSON.stringify([live(A_NOTE), live(B_OTHER), tables.vault_notes_backup]);
   const out = await post(B_NOTE, asB);
   assert.equal(out.status, 200);
-  assert.equal(out.body.restored, false); assert.equal(out.body.confirmRequired, true);
+  assert.equal(out.body.restored, true); assert.equal(out.body.confirmRequired, undefined);
   assert.deepEqual(out.body.preview.changes, { recreate: false, title: true, content: true });
-  assert.equal(out.body.preview.willChange, true);
   assert.equal(out.body.preview.restoreVersion.contentSha256, backupRow(original.B).content_sha256);
-  assert.equal(snapshotOf(), before);
-  assert.ok(!state.calls.some((call) => call.startsWith('update:') || call.startsWith('insert:') || call.startsWith('delete:')));
+  assert.deepEqual(live(B_NOTE), { ...original.B });
+  assert.equal(JSON.stringify([live(A_NOTE), live(B_OTHER), tables.vault_notes_backup]), others);
   assert.ok(!JSON.stringify(out.body).includes('변조된 내용') && !JSON.stringify(out.body).includes('B 내용'));
 });
 
@@ -327,13 +335,14 @@ test('틀린 확인 코드나 문자열이 아닌 확인 값은 복원하지 못
     const out = await post(B_NOTE, asB, { body: { confirm } });
     assert.equal(out.status, 200); assert.equal(out.body.restored, false); assert.equal(out.body.confirmRequired, true);
   }
-  assert.equal((await post(B_NOTE, asB, { body: '이건 JSON이 아님' })).body.restored, false);
   assert.equal(snapshotOf(), before);
+  // 읽을 수 없는 본문은 확인 코드가 없는 것과 같아서, 한 번 부르는 복원으로 이어집니다.
+  assert.equal((await post(B_NOTE, asB, { body: '이건 JSON이 아님' })).body.restored, true);
 });
 
 test('미리본 뒤 메모가 또 바뀌면 이전 확인 코드로는 복원되지 않고 새 미리보기가 나온다', async () => {
   Object.assign(live(B_NOTE), { title: '변조됨' });
-  const first = await post(B_NOTE, asB);
+  const first = await preview(B_NOTE, asB);
   Object.assign(live(B_NOTE), { title: '미리본 뒤 또 변조됨' });
   const before = snapshotOf();
   const stale = await post(B_NOTE, asB, { body: { confirm: first.body.preview.confirmCode } });
@@ -344,7 +353,7 @@ test('미리본 뒤 메모가 또 바뀌면 이전 확인 코드로는 복원되
 });
 
 test('A는 B의 확인 코드를 알아도 B의 메모를 복원할 수 없다', async () => {
-  const code = (await post(B_NOTE, asB)).body.preview.confirmCode;
+  const code = (await preview(B_NOTE, asB)).body.preview.confirmCode;
   Object.assign(live(B_NOTE), { title: '변조됨' });
   const before = snapshotOf();
   const out = await post(B_NOTE, asA, { body: { confirm: code } });
@@ -355,7 +364,7 @@ test('A는 B의 확인 코드를 알아도 B의 메모를 복원할 수 없다',
 // ---- 쓰기 직전 사본 다시 읽기, 쓴 뒤 확인 실패 시 되돌리기 ----
 test('쓰기 직전에 사본을 다시 읽어 달라졌으면 409로 멈추고 아무것도 쓰지 않는다', async () => {
   Object.assign(live(B_NOTE), { title: '변조됨', content: '변조된 내용' });
-  const first = await post(B_NOTE, asB);
+  const first = await preview(B_NOTE, asB);
   state.backupReads = 0; state.driftOnReread = true; // 이번 요청의 첫 읽기는 정상, 쓰기 직전 두 번째 읽기에서 사본이 달라져 있음
   const before = snapshotOf();
   const out = await post(B_NOTE, asB, { body: { confirm: first.body.preview.confirmCode } });
@@ -435,4 +444,52 @@ test('정책 사본 검증은 메모 사본 검증 뒤에 한다: 메모 사본�
   service = serviceWith({ policySnapshot: null });
   const out = await post('dddddddd-dddd-4ddd-8ddd-dddddddddddd', asB);
   assert.equal(out.status, 404);
+});
+
+// ---- 감사 기록: 복원 요청마다 한 줄 덧붙이기만 하고, 기존 줄은 보존한다 ----
+test('감사 기록: 복원하면 한 줄이 덧붙고 기존 줄은 그대로이며, 내용·토큰은 들어가지 않는다', async () => {
+  Object.assign(live(B_NOTE), { title: '변조됨', content: '변조된 내용' });
+  const out = await post(B_NOTE, asB);
+  assert.equal(out.status, 200);
+  assert.deepEqual(state.audit.map((row) => row.outcome), ['old-1', 'old-2', 'restored']);
+  assert.deepEqual(state.audit[2], { owner_id: USER_B, note_id: B_NOTE, outcome: 'restored', status: 200 });
+  assert.deepEqual(state.auditOps, ['insert']);
+  const text = JSON.stringify([state.audit, logged]);
+  assert.ok(!text.includes('변조된 내용') && !text.includes(TOKEN_B) && !text.includes(FAKE_KEY));
+});
+
+test('감사 기록: 사본이 없거나 검증이 실패해 멈춘 요청도 한 줄씩 남고 기존 줄은 그대로다', async () => {
+  const missing = await post('dddddddd-dddd-4ddd-8ddd-dddddddddddd', asB);
+  assert.equal(missing.status, 404);
+  tables.vault_notes_backup[0].content_sha256 = '0'.repeat(64);
+  assert.equal((await post(B_NOTE, asB)).status, 409);
+  assert.deepEqual(state.audit.map((row) => [row.outcome, row.status]), [['old-1', undefined], ['old-2', undefined], ['not_found', 404], ['backup_integrity_failed', 409]]);
+  assert.deepEqual(state.auditOps, ['insert', 'insert']);
+});
+
+test('감사 기록: 미리보기(GET)는 기록하지 않고, 틀린 확인 코드로 멈춘 요청은 기록한다', async () => {
+  await preview(B_NOTE, asB);
+  assert.equal(state.audit.length, 2);
+  Object.assign(live(B_NOTE), { title: '변조됨' });
+  await post(B_NOTE, asB, { body: { confirm: '0000000000000000' } });
+  assert.deepEqual(state.audit.map((row) => row.outcome), ['old-1', 'old-2', 'confirm_mismatch']);
+});
+
+test('감사 기록: 쓰기가 실패하거나 쓴 뒤 확인이 실패해도 결과가 한 줄로 남고, 기록 표를 고치거나 지우는 호출은 없다', async () => {
+  state.writeFails = true; Object.assign(live(B_NOTE), { title: '변조됨', content: '변조된 내용' });
+  assert.equal((await post(B_NOTE, asB)).status, 502);
+  state.writeFails = false; state.sloppyWrite = true;
+  assert.equal((await post(B_NOTE, asB)).status, 502);
+  assert.deepEqual(state.audit.slice(2).map((row) => row.outcome), ['write_failed', 'restore_verify_failed_undone']);
+  assert.deepEqual(state.auditOps, ['insert', 'insert']);
+});
+
+test('감사 기록: 기록 표가 없거나 실패해도 복원은 막히지 않고 비밀값 없이 한 줄만 로그에 남는다', async () => {
+  state.auditFails = true; Object.assign(live(B_NOTE), { title: '변조됨' });
+  const out = await post(B_NOTE, asB);
+  assert.equal(out.status, 200); assert.equal(out.body.restored, true);
+  assert.deepEqual(live(B_NOTE), { ...original.B });
+  assert.ok(logged.some((line) => line.includes('restore audit failed')));
+  assert.ok(!JSON.stringify(logged).includes(FAKE_KEY));
+  assert.equal(state.audit.length, 2);
 });

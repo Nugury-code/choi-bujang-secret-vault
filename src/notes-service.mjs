@@ -231,39 +231,56 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
 
   // 10단계 /api/notes/:id/restore : 비공개 사본 표(vault_notes_backup)에서 "지정한 메모 한 건"만 되살립니다.
   // 프롬프트 47대로: 지정한 한 건(주소의 id)만, 사본과 ID·소유자·내용 해시를 대조하고, 다른 메모는 건드리지 않습니다.
-  // 흐름(사용자가 정한 흐름): 복원 요청(POST) → 미리보기(복원할 버전·바뀔 항목)와 확인 코드만 돌려줌, 아무것도 쓰지 않음
-  //   → 사람이 미리보기를 보고 확인 코드를 붙여 같은 POST를 다시 보냄 → 그때서야 그 한 건만 복원.
-  //   확인 코드는 "복원할 버전의 해시 + 지금 메모의 해시"로 만든 값이라, 미리본 뒤 메모나 사본이 바뀌면 맞지 않아 다시 미리보기부터 합니다. (코드 방식·이름 confirm은 내가 정한 값: 짐작)
-  //   GET은 같은 미리보기를 쓰기 없이 보여 주기만 합니다.
+  // 흐름: GET은 복원할 버전·바뀔 항목(미리보기)과 확인 코드를 쓰기 없이 보여 줍니다.
+  //   POST는 한 번 불러도 그 한 건을 복원하고, 응답에 복원한 버전·바뀐 항목(preview)을 함께 돌려줍니다.
+  //   미리보기에서 받은 확인 코드(confirm)를 붙여 보내면 "미리본 뒤 메모나 사본이 바뀌지 않았을 때만" 복원하고, 코드가 틀리면 복원하지 않고 미리보기를 다시 보여 줍니다.
+  //   확인 코드는 "복원할 버전의 해시 + 지금 메모의 해시"로 만든 값입니다. (코드 방식·이름 confirm은 내가 정한 값: 짐작)
+  //   복원 요청마다 감사 기록(restore_audit) 한 줄을 덧붙이기만 합니다. 기존 줄은 읽지도 고치지도 지우지도 않고, 기록이 실패해도 복원은 막지 않습니다.
   // 순서: ① 사본 읽기(id와 소유자가 같은 행만) ② 사본의 내용 해시를 다시 계산해 저장된 해시와 대조(다르면 중단)
   //       ②-2 정책 사본도 검증(없거나 검증 실패면 중단)하고 복원할 정책 버전과 바뀔 항목을 미리보기에 담음(읽기만)
-  //       ③ 지금 메모 읽기 ④ 확인 코드가 없거나 틀리면 미리보기만 돌려주고 끝
+  //       ③ 지금 메모 읽기 ④ 확인 코드를 붙였는데 틀리면 미리보기만 돌려주고 끝(코드를 안 붙였으면 이어서 복원)
   //       ⑤ 쓰기 직전에 검증한 사본을 다시 읽어 같은지 확인(다르면 409로 멈춤) 뒤 그 한 건만 그 사본 내용으로 쓰기
   //       ⑥ 쓴 뒤 다시 읽어 ID·소유자·내용 해시가 사본과 같은지 대조(다르면 이 한 건을 쓰기 전 모습으로 되돌리고 502).
-  // 소유자는 로그인 토큰으로 확인된 사용자 ID로만 정합니다. 요청 본문에서는 confirm 하나만 읽고, 나머지(id·owner_id·사본 값 등)는 무시합니다.
+  // 소유자는 로그인 토큰으로 확인된 사용자 ID로만 정합니다. 요청 본문에서는 confirm(있을 때만) 하나만 읽고, 나머지(id·owner_id·사본 값 등)는 무시합니다.
+  // 복원 요청 한 건의 감사 기록(supabase/006_restore_audit.sql). 줄을 덧붙이기만 합니다(읽기·수정·삭제 없음).
+  // 메모 제목·본문·이메일·토큰은 넣지 않고 누가(owner_id)·어느 메모에(note_id)·어떻게 끝났는지(outcome, status)만 적습니다. (표·칸 이름은 내가 정한 값: 짐작)
+  async function recordRestoreAudit(db, row) {
+    try {
+      const { error } = await db.from('restore_audit').insert(row);
+      if (error) console.error('notes: restore audit failed', error.code ?? 'unknown');
+    } catch {
+      console.error('notes: restore audit unavailable');
+    }
+  }
+
   async function handleRestore(request, response) {
     return run(request, response, ['GET', 'POST'], async ({ db, userId }) => {
       const rawId = restoreIdFromRequest(request);
       if (!UUID.test(rawId)) return deny(response, 404, { error: 'NOT_FOUND' }, 'bad_id');
       const id = rawId.toLowerCase();
+      // POST(복원 요청)만 끝날 때 감사 기록을 한 줄 덧붙입니다. GET(미리보기)은 기록하지 않습니다.
+      const end = async (outcome, status, make) => {
+        if (request.method === 'POST') await recordRestoreAudit(db, { owner_id: userId, note_id: id, outcome, status });
+        return make();
+      };
       const isSha = (v) => typeof v === 'string' && /^[0-9a-f]{64}$/u.test(v);
       const shaOf = (row) => (row ? noteContentSha256(row.title, row.content) : null);
       // ① 사본 읽기: 없거나 주인이 다르면 같은 404(남의 사본이 있는지 알려 주지 않음).
       const first = await db.from('vault_notes_backup')
         .select('note_id, owner_id, title, content, content_sha256, backed_up_at')
         .eq('note_id', id).eq('owner_id', userId).maybeSingle();
-      if (first.error) { console.error('notes: backup read failed', first.error.code ?? 'unknown'); return deny(response, 502, { error: 'NOTES_READ_FAILED' }, 'backup_read_failed'); }
+      if (first.error) { console.error('notes: backup read failed', first.error.code ?? 'unknown'); return end('backup_read_failed', 502, () => deny(response, 502, { error: 'NOTES_READ_FAILED' }, 'backup_read_failed')); }
       const copy = first.data;
-      if (!copy || copy.note_id !== id || copy.owner_id !== userId) return deny(response, 404, { error: 'NOT_FOUND' }, 'backup_not_found_or_not_owner');
+      if (!copy || copy.note_id !== id || copy.owner_id !== userId) return end('not_found', 404, () => deny(response, 404, { error: 'NOT_FOUND' }, 'backup_not_found_or_not_owner'));
       // ② 대조: 사본의 제목·본문으로 내용 해시를 다시 계산해 저장된 해시와 같아야 합니다.
-      if (!isSha(copy.content_sha256) || shaOf(copy) !== copy.content_sha256) return deny(response, 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_hash_mismatch');
+      if (!isSha(copy.content_sha256) || shaOf(copy) !== copy.content_sha256) return end('backup_integrity_failed', 409, () => deny(response, 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_hash_mismatch'));
       // ②-2 정책 사본(policy/safe-policy.snapshot.json)도 같은 방식으로 검증합니다(모양·지문·비밀값 모양). 없거나 검증에 실패하면 복원하지 않고 멈춥니다.
       //    운영 정책(src/decider.mjs, aleph.config.json)은 읽기만 하며 바꾸지 않습니다. (프롬프트 45·46의 정책 사본을 복원 경로에 이은 것은 내가 정한 값: 짐작)
       const policyPlan = planPolicyRestore({ snapshot: policySnapshot, current: readCurrentPolicy({ ruleIds: RULE_IDS, config }) });
-      if (!policyPlan.ok) return deny(response, 409, { error: 'POLICY_SNAPSHOT_INVALID' }, 'policy_snapshot_invalid');
+      if (!policyPlan.ok) return end('policy_snapshot_invalid', 409, () => deny(response, 409, { error: 'POLICY_SNAPSHOT_INVALID' }, 'policy_snapshot_invalid'));
       // ③ 지금 모습 읽기(미리보기와 쓰기가 같이 씁니다). ⑤ 쓰기는 내 메모가 있으면 그 행의 제목·본문만 사본 내용으로, 없으면 같은 id·소유자로 다시 만듭니다.
       const live = await db.from('vault_notes').select(COLUMNS).eq('note_id', id).eq('owner_id', userId).maybeSingle();
-      if (live.error) { console.error('notes: read failed', live.error.code ?? 'unknown'); return deny(response, 502, { error: 'NOTES_READ_FAILED' }, 'live_read_failed'); }
+      if (live.error) { console.error('notes: read failed', live.error.code ?? 'unknown'); return end('live_read_failed', 502, () => deny(response, 502, { error: 'NOTES_READ_FAILED' }, 'live_read_failed')); }
       // 미리보기: 쓰기 전에 복원할 버전과 바뀔 항목만 보여 줍니다. 아무것도 쓰지 않고, 메모 원문은 응답에 넣지 않습니다.
       // 사본이 없거나 검증에 실패하면 위에서 이미 멈췄습니다. (이름 preview·restoreVersion·current·changes·confirmCode는 내가 정한 값: 짐작)
       const now = live.data;
@@ -281,20 +298,21 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
         confirmCode,
       };
       if (request.method === 'GET') return send(response, 200, { id: copy.note_id, ownerId: copy.owner_id, preview });
-      // ④ 확인 코드가 없거나 미리본 뒤 상태가 바뀌어 맞지 않으면 복원하지 않고 미리보기를 다시 보여 줍니다.
-      if (parseBody(request)?.confirm !== confirmCode) {
-        return send(response, 200, { id: copy.note_id, ownerId: copy.owner_id, restored: false, confirmRequired: true, preview });
+      // ④ 확인 코드를 붙였는데 미리본 뒤 상태가 바뀌어 맞지 않으면 복원하지 않고 미리보기를 다시 보여 줍니다. 코드를 안 붙였으면 이어서 복원합니다.
+      const given = parseBody(request)?.confirm;
+      if (given !== undefined && given !== confirmCode) {
+        return end('confirm_mismatch', 200, () => send(response, 200, { id: copy.note_id, ownerId: copy.owner_id, restored: false, confirmRequired: true, preview }));
       }
       // ⑤ 쓰기 직전에 검증한 사본을 한 번 더 읽어, 처음 읽어 검증한 사본과 같고 해시도 여전히 맞는지 봅니다. 다르면 쓰지 않고 멈춥니다.
       //    쓰는 값은 이 다시 읽은 사본에서 가져옵니다. (카드 문구 "검증한 사본을 다시 읽지 않았거나"에 맞춘 단계라 내가 정한 값: 짐작)
       const again = await db.from('vault_notes_backup')
         .select('note_id, owner_id, title, content, content_sha256, backed_up_at')
         .eq('note_id', id).eq('owner_id', userId).maybeSingle();
-      if (again.error) { console.error('notes: backup reread failed', again.error.code ?? 'unknown'); return deny(response, 502, { error: 'NOTES_READ_FAILED' }, 'backup_reread_failed'); }
+      if (again.error) { console.error('notes: backup reread failed', again.error.code ?? 'unknown'); return end('backup_reread_failed', 502, () => deny(response, 502, { error: 'NOTES_READ_FAILED' }, 'backup_reread_failed')); }
       const fresh = again.data;
       if (!fresh || fresh.note_id !== copy.note_id || fresh.owner_id !== copy.owner_id || fresh.title !== copy.title || fresh.content !== copy.content
         || fresh.content_sha256 !== copy.content_sha256 || shaOf(fresh) !== copy.content_sha256) {
-        return deny(response, 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_changed_before_write');
+        return end('backup_changed_before_write', 409, () => deny(response, 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_changed_before_write'));
       }
       const before = live.data; // 쓰기 전 모습: 쓴 뒤 확인이 실패하면 이 모습으로 되돌립니다.
       const wrote = before
@@ -302,7 +320,7 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
         : await db.from('vault_notes').insert({ note_id: id, owner_id: userId, title: fresh.title, content: fresh.content });
       if (wrote.error) {
         console.error('notes: write failed', wrote.error.code ?? 'unknown');
-        return deny(response, 502, { error: 'NOTES_WRITE_FAILED' }, 'write_failed');
+        return end('write_failed', 502, () => deny(response, 502, { error: 'NOTES_WRITE_FAILED' }, 'write_failed'));
       }
       // ⑥ 쓴 뒤 다시 읽어 ID·소유자·내용 해시가 사본과 같은지 대조합니다.
       //    같지 않으면 이 한 건만 쓰기 전 모습으로 되돌리고(원래 없었으면 지움) 502로 알립니다. (되돌리기는 내가 정한 값: 짐작)
@@ -312,9 +330,11 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
         const undone = before
           ? await db.from('vault_notes').update({ title: before.title, content: before.content }).eq('note_id', id).eq('owner_id', userId)
           : await db.from('vault_notes').delete().eq('note_id', id).eq('owner_id', userId);
-        return deny(response, 502, { error: 'RESTORE_VERIFY_FAILED' }, undone.error ? 'restore_verify_failed_undo_failed' : 'restore_verify_failed_undone');
+        const why = undone.error ? 'restore_verify_failed_undo_failed' : 'restore_verify_failed_undone';
+        return end(why, 502, () => deny(response, 502, { error: 'RESTORE_VERIFY_FAILED' }, why));
       }
-      return send(response, 200, { id: row.note_id, ownerId: row.owner_id, contentSha256: copy.content_sha256, restored: true });
+      // 성공 응답에도 복원한 버전과 바뀐 항목(preview)을 함께 돌려줍니다. 메모 원문은 넣지 않습니다.
+      return end('restored', 200, () => send(response, 200, { id: row.note_id, ownerId: row.owner_id, contentSha256: copy.content_sha256, restored: true, preview }));
     });
   }
 

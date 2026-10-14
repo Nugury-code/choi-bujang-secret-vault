@@ -162,8 +162,8 @@ test('B가 변조된 자기 메모 한 건을 복원: 사본과 id·소유자·�
   assert.equal(noteContentSha256(row.title, row.content), tables.vault_notes_backup[0].content_sha256);
   assert.equal(JSON.stringify([live(A_NOTE), live(B_OTHER), tables.vault_notes_backup]), before);
   assert.equal(out.headers.get('cache-control'), 'no-store');
-  // 순서: 사본 읽기 → 지금 메모 읽기 → 그 한 건만 쓰기 → 쓴 뒤 다시 읽어 대조.
-  assert.deepEqual(state.calls, ['read:vault_notes_backup', 'read:vault_notes', 'update:vault_notes', 'read:vault_notes']);
+  // 순서: 사본 읽기 → 지금 메모 읽기 → 쓰기 직전 사본 다시 읽기 → 그 한 건만 쓰기 → 쓴 뒤 다시 읽어 대조.
+  assert.deepEqual(state.calls, ['read:vault_notes_backup', 'read:vault_notes', 'read:vault_notes_backup', 'update:vault_notes', 'read:vault_notes']);
 });
 
 test('B가 삭제된 자기 메모 한 건을 복원: 같은 id·소유자로 다시 생기고 다른 행은 그대로', async () => {
@@ -345,4 +345,37 @@ test('A는 B의 확인 코드를 알아도 B의 메모를 복원할 수 없다',
   const out = await post(B_NOTE, asA, { body: { confirm: code } });
   assert.equal(out.status, 404); assert.deepEqual(out.body, { error: 'NOT_FOUND' });
   assert.equal(snapshotOf(), before);
+});
+
+// ---- 쓰기 직전 사본 다시 읽기, 쓴 뒤 확인 실패 시 되돌리기 ----
+test('쓰기 직전에 사본을 다시 읽어 달라졌으면 409로 멈추고 아무것도 쓰지 않는다', async () => {
+  Object.assign(live(B_NOTE), { title: '변조됨', content: '변조된 내용' });
+  const first = await post(B_NOTE, asB);
+  state.backupReads = 0; state.driftOnReread = true; // 이번 요청의 첫 읽기는 정상, 쓰기 직전 두 번째 읽기에서 사본이 달라져 있음
+  const before = snapshotOf();
+  const out = await post(B_NOTE, asB, { body: { confirm: first.body.preview.confirmCode } });
+  assert.equal(out.status, 409); assert.deepEqual(out.body, { error: 'BACKUP_INTEGRITY_FAILED' });
+  assert.equal(snapshotOf(), before);
+  assert.ok(logged.some((l) => l.includes('backup_changed_before_write')));
+});
+
+test('쓴 뒤 확인이 실패하면 이 한 건을 쓰기 전 모습으로 되돌리고 502로 알린다 (다른 메모는 그대로)', async () => {
+  Object.assign(live(B_NOTE), { title: '변조됨', content: '변조된 내용' });
+  state.sloppyWrite = true; // 가짜 DB가 사본 내용을 쓰려 할 때 엉뚱한 값을 저장하게 만든다
+  const others = JSON.stringify([live(A_NOTE), live(B_OTHER), tables.vault_notes_backup]);
+  const out = await postConfirmed(B_NOTE, asB);
+  assert.equal(out.status, 502); assert.deepEqual(out.body, { error: 'RESTORE_VERIFY_FAILED' });
+  assert.equal(live(B_NOTE).title, '변조됨'); assert.equal(live(B_NOTE).content, '변조된 내용'); assert.equal(live(B_NOTE).owner_id, USER_B);
+  assert.equal(JSON.stringify([live(A_NOTE), live(B_OTHER), tables.vault_notes_backup]), others);
+  assert.ok(logged.some((l) => l.includes('restore_verify_failed_undone')));
+  assert.ok(!JSON.stringify([out.body, logged]).includes('엉뚱하게'));
+});
+
+test('삭제돼 있던 메모를 다시 만든 뒤 확인이 실패하면 만든 행을 지워 원래대로(없음) 돌린다', async () => {
+  tables.vault_notes.splice(tables.vault_notes.indexOf(live(B_NOTE)), 1);
+  state.sloppyWrite = true;
+  const out = await postConfirmed(B_NOTE, asB);
+  assert.equal(out.status, 502);
+  assert.equal(live(B_NOTE), undefined);
+  assert.equal(tables.vault_notes.length, 2);
 });

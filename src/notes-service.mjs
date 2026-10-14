@@ -233,8 +233,9 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
   //   확인 코드는 "복원할 버전의 해시 + 지금 메모의 해시"로 만든 값이라, 미리본 뒤 메모나 사본이 바뀌면 맞지 않아 다시 미리보기부터 합니다. (코드 방식·이름 confirm은 내가 정한 값: 짐작)
   //   GET은 같은 미리보기를 쓰기 없이 보여 주기만 합니다.
   // 순서: ① 사본 읽기(id와 소유자가 같은 행만) ② 사본의 내용 해시를 다시 계산해 저장된 해시와 대조(다르면 중단)
-  //       ③ 지금 메모 읽기 ④ 확인 코드가 없거나 틀리면 미리보기만 돌려주고 끝 ⑤ 그 한 건만 사본 내용으로 쓰기
-  //       ⑥ 쓴 뒤 다시 읽어 ID·소유자·내용 해시가 사본과 같은지 대조(다르면 502).
+  //       ③ 지금 메모 읽기 ④ 확인 코드가 없거나 틀리면 미리보기만 돌려주고 끝
+  //       ⑤ 쓰기 직전에 검증한 사본을 다시 읽어 같은지 확인(다르면 409로 멈춤) 뒤 그 한 건만 그 사본 내용으로 쓰기
+  //       ⑥ 쓴 뒤 다시 읽어 ID·소유자·내용 해시가 사본과 같은지 대조(다르면 이 한 건을 쓰기 전 모습으로 되돌리고 502).
   // 소유자는 로그인 토큰으로 확인된 사용자 ID로만 정합니다. 요청 본문에서는 confirm 하나만 읽고, 나머지(id·owner_id·사본 값 등)는 무시합니다.
   async function handleRestore(request, response) {
     return run(request, response, ['GET', 'POST'], async ({ db, userId }) => {
@@ -271,18 +272,34 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
       if (parseBody(request)?.confirm !== confirmCode) {
         return send(response, 200, { id: copy.note_id, ownerId: copy.owner_id, restored: false, confirmRequired: true, preview });
       }
-      const wrote = live.data
-        ? await db.from('vault_notes').update({ title: copy.title, content: copy.content }).eq('note_id', id).eq('owner_id', userId)
-        : await db.from('vault_notes').insert({ note_id: id, owner_id: userId, title: copy.title, content: copy.content });
+      // ⑤ 쓰기 직전에 검증한 사본을 한 번 더 읽어, 처음 읽어 검증한 사본과 같고 해시도 여전히 맞는지 봅니다. 다르면 쓰지 않고 멈춥니다.
+      //    쓰는 값은 이 다시 읽은 사본에서 가져옵니다. (카드 문구 "검증한 사본을 다시 읽지 않았거나"에 맞춘 단계라 내가 정한 값: 짐작)
+      const again = await db.from('vault_notes_backup')
+        .select('note_id, owner_id, title, content, content_sha256, backed_up_at')
+        .eq('note_id', id).eq('owner_id', userId).maybeSingle();
+      if (again.error) { console.error('notes: backup reread failed', again.error.code ?? 'unknown'); return deny(response, 502, { error: 'NOTES_READ_FAILED' }, 'backup_reread_failed'); }
+      const fresh = again.data;
+      if (!fresh || fresh.note_id !== copy.note_id || fresh.owner_id !== copy.owner_id || fresh.title !== copy.title || fresh.content !== copy.content
+        || fresh.content_sha256 !== copy.content_sha256 || shaOf(fresh) !== copy.content_sha256) {
+        return deny(response, 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_changed_before_write');
+      }
+      const before = live.data; // 쓰기 전 모습: 쓴 뒤 확인이 실패하면 이 모습으로 되돌립니다.
+      const wrote = before
+        ? await db.from('vault_notes').update({ title: fresh.title, content: fresh.content }).eq('note_id', id).eq('owner_id', userId)
+        : await db.from('vault_notes').insert({ note_id: id, owner_id: userId, title: fresh.title, content: fresh.content });
       if (wrote.error) {
         console.error('notes: write failed', wrote.error.code ?? 'unknown');
         return deny(response, 502, { error: 'NOTES_WRITE_FAILED' }, 'write_failed');
       }
       // ⑥ 쓴 뒤 다시 읽어 ID·소유자·내용 해시가 사본과 같은지 대조합니다.
+      //    같지 않으면 이 한 건만 쓰기 전 모습으로 되돌리고(원래 없었으면 지움) 502로 알립니다. (되돌리기는 내가 정한 값: 짐작)
       const after = await db.from('vault_notes').select(COLUMNS).eq('note_id', id).eq('owner_id', userId).maybeSingle();
       const row = after.data;
       if (after.error || !row || row.note_id !== copy.note_id || row.owner_id !== copy.owner_id || shaOf(row) !== copy.content_sha256) {
-        return deny(response, 502, { error: 'RESTORE_VERIFY_FAILED' }, 'restore_verify_failed');
+        const undone = before
+          ? await db.from('vault_notes').update({ title: before.title, content: before.content }).eq('note_id', id).eq('owner_id', userId)
+          : await db.from('vault_notes').delete().eq('note_id', id).eq('owner_id', userId);
+        return deny(response, 502, { error: 'RESTORE_VERIFY_FAILED' }, undone.error ? 'restore_verify_failed_undo_failed' : 'restore_verify_failed_undone');
       }
       return send(response, 200, { id: row.note_id, ownerId: row.owner_id, contentSha256: copy.content_sha256, restored: true });
     });

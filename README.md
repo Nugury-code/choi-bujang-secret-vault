@@ -329,20 +329,26 @@ commit;
 **결과 기록(2026-10-13 기준)**
 
 - 클라우드에서 실행한 로컬 시험(복구를 실제로 해 보기 **전**의 코드, 판정이 아님): `test:r5` 8개, `test:package` 3개, `test:notes` 25개, `test:auth` 4개, `test:authapi` 9개, `test:limit` 6개, `test:restore` 33개, `test:policy` 18개, `resources.test.mjs` 3개가 모두 통과. `decider:test` 네 줄 통과, `fixture:7` 정상 `allow`·복합 `step_up`, `detect:test` 여섯 줄 통과.
-- 위 순서 1~2(미리보기·메모 복원)와 5~7(배포 환경 확인·로그인 수동 확인·`npm run bundle` 직접 점검)을 실제로 복구한 뒤에 실행한 기록은 **미실행**입니다. 사용자 PC에서의 `npm run test:*` 실행도 **미실행**입니다.
+- 위 순서 1~2(미리보기·메모 복원)와 5~7(배포 환경 확인·로그인 수동 확인·`npm run bundle` 직접 점검)을 실제로 복구한 뒤에 실행한 기록은 **미실행**입니다. 사용자 PC에서의 시험 실행은 2026-10-13 기준 **미실행**이었고, 2026-10-14에 `npm run test:restore`를 실행한 결과는 아래 "사용자 PC 실행 결과"에 적었습니다.
 - 이 표는 시험 결과를 증명하지 않습니다. 실행한 뒤에는 환경(클라우드·PC·배포 주소)과 통과·실패 개수를 날짜와 함께 이 아래에 덧붙이고, 하지 않은 것은 "미실행"으로 남깁니다.
 
 **10단계 저장점 기록(2026-10-13)**
 
-- 저장점에 들어가는 변경(복구 경로를 서버 코드로 직접 처리하는 버전): `src/notes-service.mjs`(한 번 불러도 되는 복원과 감사 기록), `supabase/006_restore_audit.sql`(신규), `test/restore-api.test.mjs`(33개), `test/notes-api.test.mjs`(허용 경로 목록 한 줄), `aleph.config.json`, `api/notes/[id]/restore.js`(설명 주석), `package.json`, `.gitignore`, `src/attack-check.mjs`(10단계 허용과 복원 점검 항목), 정책 사본 도구 일체(`src/policy-diff.mjs`, `src/policy-restore.mjs`, `scripts/policy-diff.mjs`, `scripts/policy-restore.mjs`, `policy/safe-policy.snapshot.json`, `test/policy-diff.test.mjs`, `test/policy-restore.test.mjs`, `test/policy-recheck.test.mjs`), `README.md`. 저장소에서 뺀 파일: `supabase/005_restore_function.sql`, `supabase/006_restore_audit.sql`, `src/restore-pin.mjs`(Supabase에 이미 만든 DB 함수·감사 표는 그대로 남아 있고 지우지 않았습니다).
+- 저장점에 들어가는 변경(복구 경로를 서버 코드로 직접 처리하는 버전): `src/notes-service.mjs`(한 번 불러도 되는 복원과 감사 기록), `supabase/006_restore_audit.sql`(신규), `test/restore-api.test.mjs`(33개), `test/notes-api.test.mjs`(허용 경로 목록 한 줄), `aleph.config.json`, `api/notes/[id]/restore.js`(설명 주석), `package.json`, `.gitignore`, `src/attack-check.mjs`(10단계 허용과 복원 점검 항목), 정책 사본 도구 일체(`src/policy-diff.mjs`, `src/policy-restore.mjs`, `scripts/policy-diff.mjs`, `scripts/policy-restore.mjs`, `policy/safe-policy.snapshot.json`, `test/policy-diff.test.mjs`, `test/policy-restore.test.mjs`, `test/policy-recheck.test.mjs`), `README.md`. 저장소에 없는 파일: `supabase/005_restore_function.sql`(복원을 DB 함수 한 번으로 처리하던 예전 시도), `src/restore-pin.mjs`(요청의 대조값을 읽던 예전 시도). 예전 시도 때 Supabase에 DB 함수를 만들었다면 지우지 않았습니다. 감사 표 `restore_audit`(`supabase/006_restore_audit.sql`)는 지금 코드가 쓰는 표입니다.
 - `aleph.config.json`: `step` 10, `restoreRoute` `POST /api/notes/:id/restore`, `allowedRoutes`에 복원(POST)과 미리보기(GET) 경로 포함.
-- `src/attack-check.mjs`: 10단계를 받게만 했습니다(점검 항목은 더하지 않음).
+- `src/attack-check.mjs`: 10단계를 받게 했고, 로그인 없는 복원 요청(`anonymous_restore`)과 미실행 항목(`restore_backup_note`)을 더했습니다.
 - 비공개 사본 표 `vault_notes_backup`은 사용자가 Supabase SQL Editor에서 만들고 B 메모 한 건을 넣었습니다(사용자 화면 기준: 한 건, 서버 역할은 읽기만, 브라우저용 역할은 권한 없음). 사본의 해시가 서버 코드와 같은 방식인지는 실제 복원 호출로만 확인되므로 **미확인**입니다.
-- 심판의 10단계 판정, 배포 환경에서의 복원 호출, 사용자 PC에서의 `npm run test:*` 실행 결과는 이 기록을 쓸 때 **미확인·미실행**입니다. 제출한 뒤 결과를 여기에 덧붙입니다.
+- 이 기록을 쓸 때(2026-10-13)는 심판의 10단계 판정, 배포 환경에서의 복원 호출, 사용자 PC에서의 `npm run test:*` 실행 결과가 **미확인·미실행**이었습니다. 심판 판정은 아래 "10단계 심판 결과"에 덧붙였습니다. 배포 환경에서의 복원 호출(로그인한 계정으로 직접 부르는 것)은 지금도 **미확인**입니다(심판의 10단계 통과가 있어도 심판이 복원 경로를 직접 불렀는지는 확인되지 않았습니다). PC에서의 시험 실행은 아래 "사용자 PC 실행 결과"에 적었습니다.
+
+**10단계 심판 결과(2026-10-14, 사용자 화면 기준)**
+
+- 커밋 `12e3abf`(「10단계 정책 사본 요청마다 다시 읽기」): 3차 침공 10단계 **방어에 성공**, 닭크웹·동래해물피자·속초꼴뚜기순대 모두 격파, 조건 5개를 모두 확인, 완결성 가점 3개, **100/100점**. 이 커밋은 복원 요청마다 정책 사본 파일(`policy/safe-policy.snapshot.json`)을 다시 읽어 검증하도록 `src/notes-service.mjs`를 바꾼 것입니다(시험 4개 추가, `test:restore` 29개 → 33개).
+- **사용자 PC 실행 결과(2026-10-14, 커밋 `12e3abf` 이후 PC 폴더, 사용자 화면 기준):** `npm run test:restore`가 33개 시험 중 33개 통과(`fail 0`, `cancelled 0`, `skipped 0`)했습니다. 다른 `npm run test:*`(`test:notes`, `test:policy`, `test:authapi`, `test:auth`, `test:limit`, `test:r5`, `test:package`)는 PC에서 실행한 기록이 없습니다(미실행). 같은 커밋을 GitHub에서 새로 받은 클라우드 환경에서는 `test:r5` 8, `test:package` 3, `test:notes` 25, `test:auth` 4, `test:authapi` 9, `test:limit` 6, `test:restore` 33, `test:policy` 18, `resources.test.mjs` 3개가 모두 통과했습니다.
+- 앞선 제출: `a31596ab0fca`와 `85327d3d263a`는 36점(「백업 검증」 실패), `37b6ffef4811`은 36점(「백업 검증」과 「감사 기록 보존」 실패), `972cdbfdd4ff`는 48점(「백업 검증」 실패). 감사 기록 덧붙이기와 한 번 불러도 복원되는 변경이 같은 커밋에 들어 있어 「감사 기록 보존」을 어느 쪽이 열었는지는 나눌 수 없습니다.
 
 ### 이번 단계 변경 때문에 동작이 깨졌을 때 되돌리는 방법
 
-마지막으로 심판 통과를 화면으로 확인한 커밋은 `2664ef5`(9단계 수정. 10단계 변경은 이 커밋 뒤의 것으로 아직 심판 판정을 확인하지 못했습니다)이고, 그 앞서 8단계 통과를 확인한 커밋은 `40e1e15`(8단계 일반화), 그 앞서 7단계 통과를 확인한 커밋은 `4855c0f`(7단계 저장점), 그 앞서 6단계 통과를 확인한 커밋은 `1fbdb01`이며 그 앞서 정상 동작을 확인한 커밋은 `b7f0c5a`(5단계 보강: 로그인 서버 함수·횟수 제한. 이 커밋의 묶음으로 5단계 제출이 통과했고, 2차 침공 점수 500/500은 사용자 화면 기준입니다. 이후 커밋은 `xdr/` 폴더와 README만 바꿨고 사이트 코드는 바꾸지 않았습니다)입니다. 그보다 앞서 원본 자료 경로까지 확인한 커밋은 `a99409f`(배포된 `/aleph.json`이 이 커밋으로 나오고, 직접 권한 회수 SQL 적용 뒤에도 A 로그인으로 메모 읽기·추가·수정·삭제가 되고, 공개 키로 원본 자료 API를 직접 조회·수정·삭제·추가하면 401과 권한 오류 코드 `42501`, 로그인 없는 요청은 401), 4단계 저장점까지 확인한 커밋은 `1a81884`(4단계 판정 100점), 소유자 검사까지 확인한 커밋은 `60a3f7b`, 3단계 저장점까지 확인한 커밋은 `2afe0c2`, 메모 추가·수정·삭제까지 확인한 커밋은 `ae82841`, 화면과 헤더만 확인한 커밋은 `e277619`입니다. 깨졌다면 아래 순서로 되돌립니다. `git reset --hard`는 쓰지 않습니다.
+마지막으로 심판 통과를 화면으로 확인한 커밋은 `12e3abf`(「10단계 정책 사본 요청마다 다시 읽기」, 10단계 100/100)이고, 그 앞서 9단계 통과를 확인한 커밋은 `2664ef5`(9단계 수정)이며, 그 앞서 8단계 통과를 확인한 커밋은 `40e1e15`(8단계 일반화), 그 앞서 7단계 통과를 확인한 커밋은 `4855c0f`(7단계 저장점), 그 앞서 6단계 통과를 확인한 커밋은 `1fbdb01`이며 그 앞서 정상 동작을 확인한 커밋은 `b7f0c5a`(5단계 보강: 로그인 서버 함수·횟수 제한. 이 커밋의 묶음으로 5단계 제출이 통과했고, 2차 침공 점수 500/500은 사용자 화면 기준입니다. 이후 커밋은 `xdr/` 폴더와 README만 바꿨고 사이트 코드는 바꾸지 않았습니다)입니다. 그보다 앞서 원본 자료 경로까지 확인한 커밋은 `a99409f`(배포된 `/aleph.json`이 이 커밋으로 나오고, 직접 권한 회수 SQL 적용 뒤에도 A 로그인으로 메모 읽기·추가·수정·삭제가 되고, 공개 키로 원본 자료 API를 직접 조회·수정·삭제·추가하면 401과 권한 오류 코드 `42501`, 로그인 없는 요청은 401), 4단계 저장점까지 확인한 커밋은 `1a81884`(4단계 판정 100점), 소유자 검사까지 확인한 커밋은 `60a3f7b`, 3단계 저장점까지 확인한 커밋은 `2afe0c2`, 메모 추가·수정·삭제까지 확인한 커밋은 `ae82841`, 화면과 헤더만 확인한 커밋은 `e277619`입니다. 깨졌다면 아래 순서로 되돌립니다. `git reset --hard`는 쓰지 않습니다.
 
 1. `git status`와 `git diff`로 이번 단계 변경과 다른 변경을 먼저 구분합니다.
 2. 문제를 만든 커밋만 `git revert <커밋>`으로 되돌립니다. 기록을 지우지 않고 되돌리는 새 커밋이 생깁니다.

@@ -446,6 +446,44 @@ test('정책 사본 검증은 메모 사본 검증 뒤에 한다: 메모 사본�
   assert.equal(out.status, 404);
 });
 
+// ---- 정책 사본: 복원 요청마다 파일을 다시 읽어 검증한다 ----
+test('정책 사본은 요청마다 다시 읽는다: 미리보기·복원 요청마다 한 번씩 읽고, 읽을 때마다 새로 검증한다', async () => {
+  let reads = 0;
+  service = serviceWith({ readPolicySnapshot: () => { reads += 1; return JSON.stringify(policySnapshot); } });
+  await preview(B_NOTE, asB); assert.equal(reads, 1);
+  await post(B_NOTE, asB); assert.equal(reads, 2);
+  await post(B_NOTE, asB); assert.equal(reads, 3);
+});
+
+test('정책 사본 파일이 요청 사이에 바뀌면 바뀐 내용이 바로 검증된다: 변조된 사본이면 그 요청은 409로 멈추고 쓰지 않는다', async () => {
+  let current = JSON.stringify(policySnapshot);
+  service = serviceWith({ readPolicySnapshot: () => current });
+  Object.assign(live(B_NOTE), { title: '변조됨' });
+  const tampered = JSON.parse(JSON.stringify(policySnapshot)); tampered.policy.ruleIds.push('invented_rule');
+  current = JSON.stringify(tampered);
+  const before = snapshotOf(); state.calls.length = 0;
+  const out = await post(B_NOTE, asB);
+  assert.equal(out.status, 409); assert.deepEqual(out.body, { error: 'POLICY_SNAPSHOT_INVALID' });
+  assert.equal(snapshotOf(), before);
+  assert.ok(!state.calls.some((call) => call.startsWith('update:') || call.startsWith('insert:') || call.startsWith('delete:')));
+  current = JSON.stringify(policySnapshot); // 다시 멀쩡한 사본으로 돌아오면 같은 서비스가 복원한다
+  const again = await post(B_NOTE, asB);
+  assert.equal(again.status, 200); assert.equal(again.body.restored, true);
+});
+
+test('정책 사본 파일을 못 읽으면(null) 배포에 들어간 같은 사본으로 검증해 복원이 막히지 않는다', async () => {
+  service = serviceWith({ readPolicySnapshot: () => null });
+  Object.assign(live(B_NOTE), { title: '변조됨' });
+  const out = await post(B_NOTE, asB);
+  assert.equal(out.status, 200); assert.equal(out.body.restored, true);
+});
+
+test('기본 서비스는 저장소의 실제 정책 사본 파일을 읽어 검증한다(파일 위치 확인)', async () => {
+  const out = await preview(B_NOTE, asB);
+  assert.equal(out.status, 200);
+  assert.deepEqual(out.body.preview.policy.restoreVersion.digest, policySnapshot.digest);
+});
+
 // ---- 감사 기록: 복원 요청마다 한 줄 덧붙이기만 하고, 기존 줄은 보존한다 ----
 test('감사 기록: 복원하면 한 줄이 덧붙고 기존 줄은 그대로이며, 내용·토큰은 들어가지 않는다', async () => {
   Object.assign(live(B_NOTE), { title: '변조됨', content: '변조된 내용' });

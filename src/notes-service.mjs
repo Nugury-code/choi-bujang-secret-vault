@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { createClient } from '@supabase/supabase-js';
 import config from '../aleph.config.json' with { type: 'json' };
 import defaultPolicySnapshot from '../policy/safe-policy.snapshot.json' with { type: 'json' };
@@ -10,6 +11,15 @@ import { createLoginVerifier } from './verify-login.mjs';
 import { resourceIdFor, STUDENT_NOTE } from './resources.mjs';
 
 // 가상 메모 추가·조회·수정·삭제를 하는 서버 쪽 공통 코드입니다.
+
+// 정책 사본 파일(policy/safe-policy.snapshot.json)을 복원 요청마다 디스크에서 다시 읽습니다(읽기만, 쓰지 않음).
+// 파일을 못 읽으면 null을 돌려주고, 그때는 배포에 함께 들어간 같은 파일의 사본(defaultPolicySnapshot)으로 검증합니다.
+// 어느 쪽이든 아래 handleRestore에서 모양·지문·비밀값 모양을 다시 검증하고, 실패하면 복원하지 않고 멈춥니다.
+// (파일을 못 읽을 때 배포 사본으로 넘어가는 것은 배포 환경에서 파일이 빠졌을 때 복원이 통째로 막히지 않게 하려는 내가 정한 값: 짐작)
+const POLICY_SNAPSHOT_URL = new URL('../policy/safe-policy.snapshot.json', import.meta.url);
+function readPolicySnapshotFile() {
+  try { return readFileSync(POLICY_SNAPSHOT_URL, 'utf8'); } catch { return null; }
+}
 // - 로그인 토큰은 틀이 준 src/verify-login.mjs(도우미)로만 검사합니다. 도우미는 고치지 않습니다.
 // - 사용자 ID는 도우미가 확인한 값만 씁니다. 주소·쿼리·본문·헤더의 userId·owner_id·role은 믿지 않습니다.
 // - 소유자 검사(4단계): 모든 읽기·수정·삭제는 "note_id가 같고 owner_id가 확인된 사용자 ID와 같은" 행에만 닿습니다.
@@ -93,7 +103,7 @@ const defaultCreateDb = (url, key) => createClient(url, key, {
 });
 
 // createDb는 시험에서 가짜 DB를 끼우기 위한 자리입니다. 실제 서버는 기본값(Supabase 공식 SDK)을 씁니다.
-export function createNotesService({ loginConfig = config, verifierOptions = {}, createDb = defaultCreateDb, memory = createMemoryLimiter(), policySnapshot = defaultPolicySnapshot } = {}) {
+export function createNotesService({ loginConfig = config, verifierOptions = {}, createDb = defaultCreateDb, memory = createMemoryLimiter(), policySnapshot, readPolicySnapshot = readPolicySnapshotFile } = {}) {
   let cached = null;
   function verifierFor(secretKey) {
     if (!cached || cached.secretKey !== secretKey) {
@@ -276,7 +286,9 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
       if (!isSha(copy.content_sha256) || shaOf(copy) !== copy.content_sha256) return end('backup_integrity_failed', 409, () => deny(response, 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_hash_mismatch'));
       // ②-2 정책 사본(policy/safe-policy.snapshot.json)도 같은 방식으로 검증합니다(모양·지문·비밀값 모양). 없거나 검증에 실패하면 복원하지 않고 멈춥니다.
       //    운영 정책(src/decider.mjs, aleph.config.json)은 읽기만 하며 바꾸지 않습니다. (프롬프트 45·46의 정책 사본을 복원 경로에 이은 것은 내가 정한 값: 짐작)
-      const policyPlan = planPolicyRestore({ snapshot: policySnapshot, current: readCurrentPolicy({ ruleIds: RULE_IDS, config }) });
+      //    요청마다 사본 파일을 다시 읽습니다(시험에서 policySnapshot을 직접 넘기면 그 값을 씁니다).
+      const snapshotNow = policySnapshot !== undefined ? policySnapshot : (readPolicySnapshot() ?? defaultPolicySnapshot);
+      const policyPlan = planPolicyRestore({ snapshot: snapshotNow, current: readCurrentPolicy({ ruleIds: RULE_IDS, config }) });
       if (!policyPlan.ok) return end('policy_snapshot_invalid', 409, () => deny(response, 409, { error: 'POLICY_SNAPSHOT_INVALID' }, 'policy_snapshot_invalid'));
       // ③ 지금 모습 읽기(미리보기와 쓰기가 같이 씁니다). ⑤ 쓰기는 내 메모가 있으면 그 행의 제목·본문만 사본 내용으로, 없으면 같은 id·소유자로 다시 만듭니다.
       const live = await db.from('vault_notes').select(COLUMNS).eq('note_id', id).eq('owner_id', userId).maybeSingle();

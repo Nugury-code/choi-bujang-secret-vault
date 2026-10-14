@@ -3,6 +3,9 @@ import { afterEach, beforeEach, test } from 'node:test';
 import config from '../aleph.config.json' with { type: 'json' };
 import { noteContentSha256 } from '../src/note-hash.mjs';
 import { createNotesService } from '../src/notes-service.mjs';
+import { RULE_IDS } from '../src/decider.mjs';
+import { planPolicyRestore, readCurrentPolicy } from '../src/policy-diff.mjs';
+import policySnapshot from '../policy/safe-policy.snapshot.json' with { type: 'json' };
 
 const FAKE_KEY = 'fake-key-for-test-only';
 const STUDENT = config.identityProvider;
@@ -255,6 +258,8 @@ test('미리보기: 변조된 메모는 복원할 버전과 바뀔 항목이 보
   assert.equal(out.status, 200);
   assert.match(out.body.preview.confirmCode, /^[0-9a-f]{16}$/u);
   delete out.body.preview.confirmCode;
+  assert.equal(out.body.preview.policy.willChange, false); // 정책 사본은 보여 줄 뿐 운영 정책을 바꾸지 않는다
+  delete out.body.preview.policy;
   const want = backupRow(original.B);
   assert.deepEqual(out.body, {
     id: B_NOTE, ownerId: USER_B,
@@ -378,4 +383,56 @@ test('삭제돼 있던 메모를 다시 만든 뒤 확인이 실패하면 만든
   assert.equal(out.status, 502);
   assert.equal(live(B_NOTE), undefined);
   assert.equal(tables.vault_notes.length, 2);
+});
+
+// ---- 정책 사본(프롬프트 45·46): 복원 전에 검증하고, 없거나 검증에 실패하면 멈추며, 복원할 정책 버전과 바뀔 항목을 보여 준다. 운영 정책은 읽기만 한다 ----
+function serviceWith(options) {
+  return createNotesService({ verifierOptions: { supabaseClient: fakeSupabase }, createDb: () => makeFakeDb(tables, state), ...options });
+}
+
+test('미리보기에 복원할 정책 버전과 바뀔 항목이 실행 전에 보이고, 운영 정책은 바뀌지 않는다', async () => {
+  const rulesBefore = JSON.stringify([RULE_IDS, config.allowedRoutes, config.step]);
+  const out = await preview(B_NOTE, asB);
+  assert.equal(out.status, 200);
+  const plan = planPolicyRestore({ snapshot: policySnapshot, current: readCurrentPolicy({ ruleIds: RULE_IDS, config }) });
+  const shown = out.body.preview.policy;
+  assert.equal(shown.willChange, false);
+  assert.deepEqual(shown.restoreVersion, plan.restoreVersion);
+  assert.equal(shown.changeCount, plan.changeCount);
+  assert.deepEqual(shown.step, { current: config.step, restored: policySnapshot.policy.step });
+  assert.deepEqual(shown.ruleIds, { restoreAdds: [], restoreRemoves: [] });
+  assert.ok(Array.isArray(shown.allowedRoutes.restoreAdds) && Array.isArray(shown.allowedRoutes.restoreRemoves));
+  // 확인 코드 없이 보낸 복원 요청에도 같은 정책 미리보기가 들어 있다.
+  const viaPost = await post(B_NOTE, asB);
+  assert.deepEqual(viaPost.body.preview.policy, shown);
+  assert.equal(JSON.stringify([RULE_IDS, config.allowedRoutes, config.step]), rulesBefore);
+  assert.ok(!JSON.stringify(out.body).match(/eyJ|Bearer|service_role|sb_secret/u));
+});
+
+test('정책 사본이 없거나 검증에 실패하면 미리보기·복원 모두 409로 멈추고 아무것도 쓰지 않는다', async () => {
+  const tampered = JSON.parse(JSON.stringify(policySnapshot));
+  tampered.policy.ruleIds.push('invented_rule'); // 지문(digest)과 어긋남
+  const brokenShape = { snapshotVersion: 1 };
+  const secretShaped = JSON.parse(JSON.stringify(policySnapshot));
+  secretShaped.label = 'owner@example.com';
+  for (const bad of [null, tampered, brokenShape, secretShaped]) {
+    service = serviceWith({ policySnapshot: bad });
+    Object.assign(live(B_NOTE), { title: '변조됨' });
+    const before = snapshotOf();
+    state.calls.length = 0;
+    for (const out of [await preview(B_NOTE, asB), await post(B_NOTE, asB)]) {
+      assert.equal(out.status, 409); assert.deepEqual(out.body, { error: 'POLICY_SNAPSHOT_INVALID' });
+    }
+    const confirmed = await post(B_NOTE, asB, { body: { confirm: '0123456789abcdef' } });
+    assert.equal(confirmed.status, 409);
+    assert.equal(snapshotOf(), before);
+    assert.ok(!state.calls.some((call) => call.startsWith('update:') || call.startsWith('insert:') || call.startsWith('delete:')));
+  }
+  assert.ok(logged.some((l) => l.includes('policy_snapshot_invalid')));
+});
+
+test('정책 사본 검증은 메모 사본 검증 뒤에 한다: 메모 사본이 없으면 정책 사본이 멀쩡해도 404', async () => {
+  service = serviceWith({ policySnapshot: null });
+  const out = await post('dddddddd-dddd-4ddd-8ddd-dddddddddddd', asB);
+  assert.equal(out.status, 404);
 });

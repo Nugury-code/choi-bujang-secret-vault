@@ -280,7 +280,7 @@ commit;
 
 ### 10단계: 백업에서 자료실을 되살립니다
 
-이 단계에서 붙인 것은 비공개 사본에서 메모 한 건을 되살리는 경로 하나이고, 복원 요청을 하면 먼저 미리보기(복원할 버전·바뀔 항목)만 보이고, 사람이 확인 코드를 붙여 다시 보내야 실제로 복원되는 두 걸음 흐름입니다(이 흐름은 사용자가 정했습니다). 판정기 코드(`src/decider.mjs`)와 앞 단계 규칙은 바꾸지 않았습니다. 프롬프트의 "정책"은 침해 뒤 바뀐 상황(자료와 규칙의 현재 상태)으로 읽었고, 별도의 정책 파일을 만지는 도구는 두지 않았습니다(이 해석은 문서에 없어 짐작입니다).
+이 단계에서 붙인 것은 비공개 사본에서 메모 한 건을 되살리는 경로 하나이고, 복원 요청을 하면 먼저 미리보기(복원할 버전·바뀔 항목)만 보이고, 사람이 확인 코드를 붙여 다시 보내야 실제로 복원되는 두 걸음 흐름입니다(이 흐름은 사용자가 정했습니다). 판정기 코드(`src/decider.mjs`)와 앞 단계 규칙은 바꾸지 않았습니다. 프롬프트 45·46의 "검증한 안전 정책 사본"은 `policy/safe-policy.snapshot.json`(공개 값만: 단계·규칙 이름·허용 경로와 지문)으로 두고, 복원 경로가 복원 전에 이 사본을 읽어 검증한 뒤(모양·지문 재계산·비밀값 모양 검사) 복원할 정책 버전과 현재 정책과의 바뀔 항목을 미리보기에 읽기만 해서 보여 줍니다. 사본이 없거나 검증에 실패하면 `409 POLICY_SNAPSHOT_INVALID`로 멈추고 아무것도 쓰지 않습니다. 운영 정책(`src/decider.mjs`, `aleph.config.json`)은 읽기만 하고 바꾸지 않습니다. 사본의 파일 형식·지문 방식, 이 확인을 복원 경로에 이은 것은 문서에 없어 제가 정한 짐작입니다. 정책 사본은 지문이 같은 파일 안에 있어 파일과 지문을 함께 바꾸면 못 막는 한계가 있습니다.
 
 **비공개 가상 메모 사본에서 지정한 한 건만 복원하는 경로**
 
@@ -324,17 +324,17 @@ commit;
 | 7 | 정상 접속은 `allow` | 복합 이상 접속은 `step_up`, 다시 확인 전 `allow` 금지 | `npm run fixture:7`, `npm run decider:test` 3·4번째 줄 |
 | 8 | A 자기 메모 한 건 읽기·수정은 `allow` | 공지 수정·모르는 경로·`export` 같은 기능 경로는 `deny`, B의 A 메모는 API가 `404` | `npm run decider:test`, `node --test test/resources.test.mjs`, `npm run test:notes` (8단계 판정기 구역 규칙만 보는 전용 시험은 저장소에 없음) |
 | 9 | 정상 조회(30건 등)·10분 안 120건은 `observe` | 10분 안 121건은 `propose_revocation` | `npm run detect:test` |
-| 10 | 사본이 있으면 복원할 버전·바뀔 항목을 실행 전에 미리보기로 보여 줌 | 사본 없음·검증 실패는 중단, 다른 사람의 복원 요청은 `404` | 순서 1~2, `npm run test:restore` |
+| 10 | 사본이 있으면 복원할 버전(메모 사본·정책 사본)과 바뀔 항목을 실행 전에 미리보기로 보여 줌 | 메모 사본·정책 사본 없음·검증 실패는 중단, 다른 사람의 복원 요청은 `404` | 순서 1~2, `npm run test:restore` |
 
 **결과 기록(2026-10-13 기준)**
 
-- 클라우드에서 실행한 로컬 시험(복구를 실제로 해 보기 **전**의 코드, 판정이 아님): `test:r5` 8개, `test:package` 3개, `test:notes` 25개, `test:auth` 4개, `test:authapi` 9개, `test:limit` 6개, `test:restore` 21개, `resources.test.mjs` 3개가 모두 통과. `decider:test` 네 줄 통과, `fixture:7` 정상 `allow`·복합 `step_up`, `detect:test` 여섯 줄 통과.
+- 클라우드에서 실행한 로컬 시험(복구를 실제로 해 보기 **전**의 코드, 판정이 아님): `test:r5` 8개, `test:package` 3개, `test:notes` 25개, `test:auth` 4개, `test:authapi` 9개, `test:limit` 6개, `test:restore` 24개, `test/policy-diff.test.mjs` 별도, `resources.test.mjs` 3개가 모두 통과. `decider:test` 네 줄 통과, `fixture:7` 정상 `allow`·복합 `step_up`, `detect:test` 여섯 줄 통과.
 - 위 순서 1~2(미리보기·메모 복원)와 5~7(배포 환경 확인·로그인 수동 확인·`npm run bundle` 직접 점검)을 실제로 복구한 뒤에 실행한 기록은 **미실행**입니다. 사용자 PC에서의 `npm run test:*` 실행도 **미실행**입니다.
 - 이 표는 시험 결과를 증명하지 않습니다. 실행한 뒤에는 환경(클라우드·PC·배포 주소)과 통과·실패 개수를 날짜와 함께 이 아래에 덧붙이고, 하지 않은 것은 "미실행"으로 남깁니다.
 
 **10단계 저장점 기록(2026-10-13)**
 
-- 저장점에 들어가는 변경(복구 경로를 서버 코드로 직접 처리하는 버전): `src/notes-service.mjs`(미리보기와 확인 코드를 거치는 복원), `test/restore-api.test.mjs`(21개), `test/notes-api.test.mjs`(허용 경로 목록 한 줄), `aleph.config.json`, `api/notes/[id]/restore.js`(설명 주석), `package.json`, `.gitignore`, `src/attack-check.mjs`(10단계 허용), `README.md`. 저장소에서 뺀 파일: `supabase/005_restore_function.sql`, `supabase/006_restore_audit.sql`, `src/restore-pin.mjs`, 정책 파일을 만지던 도구 일체(`src/policy-diff.mjs`, `src/policy-restore.mjs`, `scripts/policy-diff.mjs`, `scripts/policy-restore.mjs`, `policy/safe-policy.snapshot.json`, `test/policy-diff.test.mjs`, `test/policy-restore.test.mjs`, `test/policy-recheck.test.mjs`)(Supabase에 이미 만든 DB 함수·감사 표는 그대로 남아 있고 지우지 않았습니다).
+- 저장점에 들어가는 변경(복구 경로를 서버 코드로 직접 처리하는 버전): `src/notes-service.mjs`(미리보기와 확인 코드를 거치는 복원), `test/restore-api.test.mjs`(24개), `src/policy-diff.mjs`·`policy/safe-policy.snapshot.json`·`test/policy-diff.test.mjs`(정책 사본 확인, 읽기 전용), `test/notes-api.test.mjs`(허용 경로 목록 한 줄), `aleph.config.json`, `api/notes/[id]/restore.js`(설명 주석), `package.json`, `.gitignore`, `src/attack-check.mjs`(10단계 허용), `README.md`. 저장소에서 뺀 파일: `supabase/005_restore_function.sql`, `supabase/006_restore_audit.sql`, `src/restore-pin.mjs`, 정책을 되돌리는 도구(`src/policy-restore.mjs`, `scripts/policy-diff.mjs`, `scripts/policy-restore.mjs`, `test/policy-restore.test.mjs`, `test/policy-recheck.test.mjs`)(Supabase에 이미 만든 DB 함수·감사 표는 그대로 남아 있고 지우지 않았습니다).
 - `aleph.config.json`: `step` 10, `restoreRoute` `POST /api/notes/:id/restore`, `allowedRoutes`에 복원(POST)과 미리보기(GET) 경로 포함.
 - `src/attack-check.mjs`: 10단계를 받게만 했습니다(점검 항목은 더하지 않음).
 - 비공개 사본 표 `vault_notes_backup`은 사용자가 Supabase SQL Editor에서 만들고 B 메모 한 건을 넣었습니다(사용자 화면 기준: 한 건, 서버 역할은 읽기만, 브라우저용 역할은 권한 없음). 사본의 해시가 서버 코드와 같은 방식인지는 실제 복원 호출로만 확인되므로 **미확인**입니다.

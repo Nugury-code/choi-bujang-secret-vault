@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 import config from '../aleph.config.json' with { type: 'json' };
 import { noteContentSha256 } from './note-hash.mjs';
@@ -226,11 +226,16 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
   }
 
 
-  // 10단계 /api/notes/:id/restore : POST. 비공개 사본 표(vault_notes_backup)에서 "지정한 메모 한 건"만 되살립니다.
+  // 10단계 /api/notes/:id/restore : 비공개 사본 표(vault_notes_backup)에서 "지정한 메모 한 건"만 되살립니다.
   // 프롬프트 47대로: 지정한 한 건(주소의 id)만, 사본과 ID·소유자·내용 해시를 대조하고, 다른 메모는 건드리지 않습니다.
+  // 흐름(사용자가 정한 흐름): 복원 요청(POST) → 미리보기(복원할 버전·바뀔 항목)와 확인 코드만 돌려줌, 아무것도 쓰지 않음
+  //   → 사람이 미리보기를 보고 확인 코드를 붙여 같은 POST를 다시 보냄 → 그때서야 그 한 건만 복원.
+  //   확인 코드는 "복원할 버전의 해시 + 지금 메모의 해시"로 만든 값이라, 미리본 뒤 메모나 사본이 바뀌면 맞지 않아 다시 미리보기부터 합니다. (코드 방식·이름 confirm은 내가 정한 값: 짐작)
+  //   GET은 같은 미리보기를 쓰기 없이 보여 주기만 합니다.
   // 순서: ① 사본 읽기(id와 소유자가 같은 행만) ② 사본의 내용 해시를 다시 계산해 저장된 해시와 대조(다르면 중단)
-  //       ③ 그 한 건만 사본 내용으로 쓰기 ④ 쓴 뒤 다시 읽어 ID·소유자·내용 해시가 사본과 같은지 대조(다르면 502).
-  // 요청 본문은 읽지 않습니다. 소유자는 로그인 토큰으로 확인된 사용자 ID로만 정합니다.
+  //       ③ 지금 메모 읽기 ④ 확인 코드가 없거나 틀리면 미리보기만 돌려주고 끝 ⑤ 그 한 건만 사본 내용으로 쓰기
+  //       ⑥ 쓴 뒤 다시 읽어 ID·소유자·내용 해시가 사본과 같은지 대조(다르면 502).
+  // 소유자는 로그인 토큰으로 확인된 사용자 ID로만 정합니다. 요청 본문에서는 confirm 하나만 읽고, 나머지(id·owner_id·사본 값 등)는 무시합니다.
   async function handleRestore(request, response) {
     return run(request, response, ['GET', 'POST'], async ({ db, userId }) => {
       const rawId = restoreIdFromRequest(request);
@@ -247,22 +252,24 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
       if (!copy || copy.note_id !== id || copy.owner_id !== userId) return deny(response, 404, { error: 'NOT_FOUND' }, 'backup_not_found_or_not_owner');
       // ② 대조: 사본의 제목·본문으로 내용 해시를 다시 계산해 저장된 해시와 같아야 합니다.
       if (!isSha(copy.content_sha256) || shaOf(copy) !== copy.content_sha256) return deny(response, 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_hash_mismatch');
-      // ③ 지금 모습 읽기(미리보기와 쓰기가 같이 씁니다). 쓰기는 내 메모가 있으면 그 행의 제목·본문만 사본 내용으로, 없으면 같은 id·소유자로 다시 만듭니다.
+      // ③ 지금 모습 읽기(미리보기와 쓰기가 같이 씁니다). ⑤ 쓰기는 내 메모가 있으면 그 행의 제목·본문만 사본 내용으로, 없으면 같은 id·소유자로 다시 만듭니다.
       const live = await db.from('vault_notes').select(COLUMNS).eq('note_id', id).eq('owner_id', userId).maybeSingle();
       if (live.error) { console.error('notes: read failed', live.error.code ?? 'unknown'); return deny(response, 502, { error: 'NOTES_READ_FAILED' }, 'live_read_failed'); }
-      // 미리보기(GET): 쓰기 전에 복원할 버전과 바뀔 항목만 보여 줍니다. 아무것도 쓰지 않고, 메모 원문은 응답에 넣지 않습니다.
-      // 사본이 없거나 검증에 실패하면 위에서 이미 멈췄습니다. (이름 preview·restoreVersion·current·changes는 내가 정한 값: 짐작)
-      if (request.method === 'GET') {
-        const now = live.data;
-        const changes = { recreate: !now, title: now ? now.title !== copy.title : true, content: now ? now.content !== copy.content : true };
-        return send(response, 200, {
-          id: copy.note_id, ownerId: copy.owner_id,
-          preview: {
-            restoreVersion: { contentSha256: copy.content_sha256, backedUpAt: copy.backed_up_at ?? null },
-            current: { exists: Boolean(now), contentSha256: shaOf(now) },
-            changes, willChange: changes.recreate || changes.title || changes.content,
-          },
-        });
+      // 미리보기: 쓰기 전에 복원할 버전과 바뀔 항목만 보여 줍니다. 아무것도 쓰지 않고, 메모 원문은 응답에 넣지 않습니다.
+      // 사본이 없거나 검증에 실패하면 위에서 이미 멈췄습니다. (이름 preview·restoreVersion·current·changes·confirmCode는 내가 정한 값: 짐작)
+      const now = live.data;
+      const changes = { recreate: !now, title: now ? now.title !== copy.title : true, content: now ? now.content !== copy.content : true };
+      const confirmCode = createHash('sha256').update(`${copy.content_sha256}:${shaOf(now) ?? 'none'}`).digest('hex').slice(0, 16);
+      const preview = {
+        restoreVersion: { contentSha256: copy.content_sha256, backedUpAt: copy.backed_up_at ?? null },
+        current: { exists: Boolean(now), contentSha256: shaOf(now) },
+        changes, willChange: changes.recreate || changes.title || changes.content,
+        confirmCode,
+      };
+      if (request.method === 'GET') return send(response, 200, { id: copy.note_id, ownerId: copy.owner_id, preview });
+      // ④ 확인 코드가 없거나 미리본 뒤 상태가 바뀌어 맞지 않으면 복원하지 않고 미리보기를 다시 보여 줍니다.
+      if (parseBody(request)?.confirm !== confirmCode) {
+        return send(response, 200, { id: copy.note_id, ownerId: copy.owner_id, restored: false, confirmRequired: true, preview });
       }
       const wrote = live.data
         ? await db.from('vault_notes').update({ title: copy.title, content: copy.content }).eq('note_id', id).eq('owner_id', userId)
@@ -271,7 +278,7 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
         console.error('notes: write failed', wrote.error.code ?? 'unknown');
         return deny(response, 502, { error: 'NOTES_WRITE_FAILED' }, 'write_failed');
       }
-      // ④ 쓴 뒤 다시 읽어 ID·소유자·내용 해시가 사본과 같은지 대조합니다.
+      // ⑥ 쓴 뒤 다시 읽어 ID·소유자·내용 해시가 사본과 같은지 대조합니다.
       const after = await db.from('vault_notes').select(COLUMNS).eq('note_id', id).eq('owner_id', userId).maybeSingle();
       const row = after.data;
       if (after.error || !row || row.note_id !== copy.note_id || row.owner_id !== copy.owner_id || shaOf(row) !== copy.content_sha256) {

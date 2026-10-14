@@ -15,8 +15,7 @@
     "xdr:run": "node scripts/xdr-run.mjs",
     "test:authapi": "node --test test/auth-api.test.mjs",
     "test:limit": "node --test test/rate-limit.test.mjs",
-    "test:restore": "node --test test/restore-api.test.mjs",
-    "test:policy": "node --test test/policy-diff.test.mjs"
+    "test:restore": "node --test test/restore-api.test.mjs"
   },
   "engines": {
     "node": ">=22"

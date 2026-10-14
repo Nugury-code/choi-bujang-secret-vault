@@ -1,11 +1,7 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 import config from '../aleph.config.json' with { type: 'json' };
-import defaultPolicySnapshot from '../policy/safe-policy.snapshot.json' with { type: 'json' };
-import { RULE_IDS } from './decider.mjs';
 import { noteContentSha256 } from './note-hash.mjs';
-import { planPolicyRestore, readCurrentPolicy } from './policy-diff.mjs';
-import { expectedCopy, pinConflicts, readPin } from './restore-pin.mjs';
 import { clientIp, createMemoryLimiter, durableHit, hashKey, tooMany } from './rate-limit.mjs';
 import { createLoginVerifier } from './verify-login.mjs';
 import { resourceIdFor, STUDENT_NOTE } from './resources.mjs';
@@ -94,7 +90,7 @@ const defaultCreateDb = (url, key) => createClient(url, key, {
 });
 
 // createDb는 시험에서 가짜 DB를 끼우기 위한 자리입니다. 실제 서버는 기본값(Supabase 공식 SDK)을 씁니다.
-export function createNotesService({ loginConfig = config, verifierOptions = {}, createDb = defaultCreateDb, memory = createMemoryLimiter(), policySnapshot = defaultPolicySnapshot } = {}) {
+export function createNotesService({ loginConfig = config, verifierOptions = {}, createDb = defaultCreateDb, memory = createMemoryLimiter() } = {}) {
   let cached = null;
   function verifierFor(secretKey) {
     if (!cached || cached.secretKey !== secretKey) {
@@ -230,30 +226,16 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
   }
 
 
-  // 10단계 /api/notes/:id/restore : 비공개 사본 표(vault_notes_backup)에서 "지정한 메모 한 건"만 되살립니다.
+  // 10단계 /api/notes/:id/restore : POST. 비공개 사본 표(vault_notes_backup)에서 "지정한 메모 한 건"만 되살립니다.
   // 프롬프트 47대로: 지정한 한 건(주소의 id)만, 사본과 ID·소유자·내용 해시를 대조하고, 다른 메모는 건드리지 않습니다.
-  // 흐름(사용자가 정한 흐름): 복원 요청(POST) → 미리보기(복원할 버전·바뀔 항목)와 확인 코드만 돌려줌, 아무것도 쓰지 않음
-  //   → 사람이 미리보기를 보고 확인 코드를 붙여 같은 POST를 다시 보냄 → 그때서야 그 한 건만 복원.
-  //   확인 코드는 "복원할 버전의 해시 + 지금 메모의 해시"로 만든 값이라, 미리본 뒤 메모나 사본이 바뀌면 맞지 않아 다시 미리보기부터 합니다. (코드 방식·이름 confirm은 내가 정한 값: 짐작)
-  //   GET은 같은 미리보기를 쓰기 없이 보여 주기만 합니다.
   // 순서: ① 사본 읽기(id와 소유자가 같은 행만) ② 사본의 내용 해시를 다시 계산해 저장된 해시와 대조(다르면 중단)
-  //       ②-2 정책 사본도 검증(없거나 검증 실패면 중단)하고 복원할 정책 버전과 바뀔 항목을 미리보기에 담음(읽기만)
-  //       ③ 지금 메모 읽기 ④ 확인 코드가 없거나 틀리면 미리보기만 돌려주고 끝
-  //       ⑤ 쓰기 직전에 검증한 사본을 다시 읽어 같은지 확인(다르면 409로 멈춤) 뒤 그 한 건만 그 사본 내용으로 쓰기
-  //       ⑥ 쓴 뒤 다시 읽어 ID·소유자·내용 해시가 사본과 같은지 대조(다르면 이 한 건을 쓰기 전 모습으로 되돌리고 502).
-  // 소유자는 로그인 토큰으로 확인된 사용자 ID로만 정합니다. 요청 본문에서는 confirm, dryRun(true면 미리보기만), 사본 대조 값만 읽습니다.
-  //   대조 값이 주소의 id나 서버가 검증한 사본과 다르면 409 BACKUP_MISMATCH로 멈춥니다. 나머지(owner_id·role 등)는 무시합니다.
+  //       ③ 그 한 건만 사본 내용으로 쓰기 ④ 쓴 뒤 다시 읽어 ID·소유자·내용 해시가 사본과 같은지 대조(다르면 502).
+  // 요청 본문은 읽지 않습니다. 소유자는 로그인 토큰으로 확인된 사용자 ID로만 정합니다.
   async function handleRestore(request, response) {
     return run(request, response, ['GET', 'POST'], async ({ db, userId }) => {
       const rawId = restoreIdFromRequest(request);
       if (!UUID.test(rawId)) return deny(response, 404, { error: 'NOT_FOUND' }, 'bad_id');
       const id = rawId.toLowerCase();
-      // 본문에서는 confirm, dryRun(정확히 true), 사본 대조 값(src/restore-pin.mjs)만 읽습니다. 나머지(owner_id·role 등)는 무시합니다.
-      // 요청에 사본 대조 값이 실려 왔고 주소의 id와 어긋나거나 서로 모순되면 DB를 부르기 전에 멈춥니다.
-      const body = parseBody(request);
-      const dryRun = body?.dryRun === true;
-      const pin = readPin(body);
-      if (pinConflicts(pin, { id })) return deny(response, 409, { error: 'BACKUP_MISMATCH' }, 'request_mismatch');
       const isSha = (v) => typeof v === 'string' && /^[0-9a-f]{64}$/u.test(v);
       const shaOf = (row) => (row ? noteContentSha256(row.title, row.content) : null);
       // ① 사본 읽기: 없거나 주인이 다르면 같은 404(남의 사본이 있는지 알려 주지 않음).
@@ -265,76 +247,37 @@ export function createNotesService({ loginConfig = config, verifierOptions = {},
       if (!copy || copy.note_id !== id || copy.owner_id !== userId) return deny(response, 404, { error: 'NOT_FOUND' }, 'backup_not_found_or_not_owner');
       // ② 대조: 사본의 제목·본문으로 내용 해시를 다시 계산해 저장된 해시와 같아야 합니다.
       if (!isSha(copy.content_sha256) || shaOf(copy) !== copy.content_sha256) return deny(response, 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_hash_mismatch');
-      // ②-2 정책 사본(policy/safe-policy.snapshot.json)도 같은 방식으로 검증합니다(모양·지문·비밀값 모양). 없거나 검증에 실패하면 복원하지 않고 멈춥니다.
-      //    운영 정책(src/decider.mjs, aleph.config.json)은 읽기만 하며 바꾸지 않습니다. (프롬프트 45·46의 정책 사본을 복원 경로에 이은 것은 내가 정한 값: 짐작)
-      const policyPlan = planPolicyRestore({ snapshot: policySnapshot, current: readCurrentPolicy({ ruleIds: RULE_IDS, config }) });
-      if (!policyPlan.ok) return deny(response, 409, { error: 'POLICY_SNAPSHOT_INVALID' }, 'policy_snapshot_invalid');
-      // 요청이 사본 내용을 같이 보냈다면(확인해 달라는 값) 서버가 검증한 사본과 같아야 합니다. 다르면 복원하지 않고 멈춥니다.
-      // 이 값은 대조에만 쓰고 복원할 내용으로는 쓰지 않습니다. 복원 내용은 서버가 읽어 검증한 사본뿐입니다. (요청 모양은 문서에 없어 이름은 내가 정한 짐작)
-      const want = expectedCopy(pin);
-      if (want && ((typeof want.title === 'string' && want.title !== copy.title) || (typeof want.content === 'string' && want.content !== copy.content))) {
-        return deny(response, 409, { error: 'BACKUP_MISMATCH' }, 'request_mismatch');
-      }
-      // ③ 지금 모습 읽기(미리보기와 쓰기가 같이 씁니다). ⑤ 쓰기는 내 메모가 있으면 그 행의 제목·본문만 사본 내용으로, 없으면 같은 id·소유자로 다시 만듭니다.
+      // ③ 지금 모습 읽기(미리보기와 쓰기가 같이 씁니다). 쓰기는 내 메모가 있으면 그 행의 제목·본문만 사본 내용으로, 없으면 같은 id·소유자로 다시 만듭니다.
       const live = await db.from('vault_notes').select(COLUMNS).eq('note_id', id).eq('owner_id', userId).maybeSingle();
       if (live.error) { console.error('notes: read failed', live.error.code ?? 'unknown'); return deny(response, 502, { error: 'NOTES_READ_FAILED' }, 'live_read_failed'); }
-      // 미리보기: 쓰기 전에 복원할 버전과 바뀔 항목만 보여 줍니다. 아무것도 쓰지 않고, 메모 원문은 응답에 넣지 않습니다.
-      // 사본이 없거나 검증에 실패하면 위에서 이미 멈췄습니다. (이름 preview·restoreVersion·current·changes·confirmCode는 내가 정한 값: 짐작)
-      const now = live.data;
-      const changes = { recreate: !now, title: now ? now.title !== copy.title : true, content: now ? now.content !== copy.content : true };
-      const confirmCode = createHash('sha256').update(`${copy.content_sha256}:${shaOf(now) ?? 'none'}`).digest('hex').slice(0, 16);
-      const preview = {
-        restoreVersion: { contentSha256: copy.content_sha256, backedUpAt: copy.backed_up_at ?? null },
-        current: { exists: Boolean(now), contentSha256: shaOf(now) },
-        changes, willChange: changes.recreate || changes.title || changes.content,
-        // 정책 사본: 복원하면 바뀔 항목을 보여 줄 뿐 운영 정책은 바꾸지 않습니다(willChange는 항상 false).
-        policy: {
-          restoreVersion: policyPlan.restoreVersion, changeCount: policyPlan.changeCount, willChange: false,
-          step: policyPlan.step, ruleIds: policyPlan.ruleIds, allowedRoutes: policyPlan.allowedRoutes,
-        },
-        confirmCode,
-      };
-      if (request.method === 'GET') return send(response, 200, { id: copy.note_id, ownerId: copy.owner_id, preview });
-      // 본문에 dryRun: true가 있으면 확인 코드 없이도 미리보기만 돌려주고 아무것도 쓰지 않습니다. (이름 dryRun은 내가 정한 짐작)
-      if (dryRun) return send(response, 200, { id: copy.note_id, ownerId: copy.owner_id, dryRun: true, restored: false, preview });
-      // ④ 확인 코드가 없거나 미리본 뒤 상태가 바뀌어 맞지 않으면 복원하지 않고 미리보기를 다시 보여 줍니다.
-      if (body?.confirm !== confirmCode) {
-        return send(response, 200, { id: copy.note_id, ownerId: copy.owner_id, restored: false, confirmRequired: true, preview });
+      // 미리보기(GET): 쓰기 전에 복원할 버전과 바뀔 항목만 보여 줍니다. 아무것도 쓰지 않고, 메모 원문은 응답에 넣지 않습니다.
+      // 사본이 없거나 검증에 실패하면 위에서 이미 멈췄습니다. (이름 preview·restoreVersion·current·changes는 내가 정한 값: 짐작)
+      if (request.method === 'GET') {
+        const now = live.data;
+        const changes = { recreate: !now, title: now ? now.title !== copy.title : true, content: now ? now.content !== copy.content : true };
+        return send(response, 200, {
+          id: copy.note_id, ownerId: copy.owner_id,
+          preview: {
+            restoreVersion: { contentSha256: copy.content_sha256, backedUpAt: copy.backed_up_at ?? null },
+            current: { exists: Boolean(now), contentSha256: shaOf(now) },
+            changes, willChange: changes.recreate || changes.title || changes.content,
+          },
+        });
       }
-      // ⑤ 쓰기 직전에 검증한 사본을 한 번 더 읽어, 처음 읽어 검증한 사본과 같고 해시도 여전히 맞는지 봅니다. 다르면 쓰지 않고 멈춥니다.
-      //    쓰는 값은 이 다시 읽은 사본에서 가져옵니다. (카드 문구 "검증한 사본을 다시 읽지 않았거나"에 맞춘 단계라 내가 정한 값: 짐작)
-      const again = await db.from('vault_notes_backup')
-        .select('note_id, owner_id, title, content, content_sha256, backed_up_at')
-        .eq('note_id', id).eq('owner_id', userId).maybeSingle();
-      if (again.error) { console.error('notes: backup reread failed', again.error.code ?? 'unknown'); return deny(response, 502, { error: 'NOTES_READ_FAILED' }, 'backup_reread_failed'); }
-      const fresh = again.data;
-      if (!fresh || fresh.note_id !== copy.note_id || fresh.owner_id !== copy.owner_id || fresh.title !== copy.title || fresh.content !== copy.content
-        || fresh.content_sha256 !== copy.content_sha256 || shaOf(fresh) !== copy.content_sha256) {
-        return deny(response, 409, { error: 'BACKUP_INTEGRITY_FAILED' }, 'backup_changed_before_write');
-      }
-      const before = live.data; // 쓰기 전 모습: 쓴 뒤 확인이 실패하면 이 모습으로 되돌립니다.
-      const wrote = before
-        ? await db.from('vault_notes').update({ title: fresh.title, content: fresh.content }).eq('note_id', id).eq('owner_id', userId)
-        : await db.from('vault_notes').insert({ note_id: id, owner_id: userId, title: fresh.title, content: fresh.content });
+      const wrote = live.data
+        ? await db.from('vault_notes').update({ title: copy.title, content: copy.content }).eq('note_id', id).eq('owner_id', userId)
+        : await db.from('vault_notes').insert({ note_id: id, owner_id: userId, title: copy.title, content: copy.content });
       if (wrote.error) {
         console.error('notes: write failed', wrote.error.code ?? 'unknown');
         return deny(response, 502, { error: 'NOTES_WRITE_FAILED' }, 'write_failed');
       }
-      // ⑥ 쓴 뒤 다시 읽어 ID·소유자·내용 해시가 사본과 같은지 대조합니다.
-      //    같지 않으면 이 한 건만 쓰기 전 모습으로 되돌리고(원래 없었으면 지움) 502로 알립니다. (되돌리기는 내가 정한 값: 짐작)
+      // ④ 쓴 뒤 다시 읽어 ID·소유자·내용 해시가 사본과 같은지 대조합니다.
       const after = await db.from('vault_notes').select(COLUMNS).eq('note_id', id).eq('owner_id', userId).maybeSingle();
       const row = after.data;
       if (after.error || !row || row.note_id !== copy.note_id || row.owner_id !== copy.owner_id || shaOf(row) !== copy.content_sha256) {
-        const undone = before
-          ? await db.from('vault_notes').update({ title: before.title, content: before.content }).eq('note_id', id).eq('owner_id', userId)
-          : await db.from('vault_notes').delete().eq('note_id', id).eq('owner_id', userId);
-        return deny(response, 502, { error: 'RESTORE_VERIFY_FAILED' }, undone.error ? 'restore_verify_failed_undo_failed' : 'restore_verify_failed_undone');
+        return deny(response, 502, { error: 'RESTORE_VERIFY_FAILED' }, 'restore_verify_failed');
       }
-      // report: 복원 전후 요약(원문 없음). 이름 report는 내가 정한 짐작.
-      return send(response, 200, {
-        id: row.note_id, ownerId: row.owner_id, contentSha256: copy.content_sha256, restored: true,
-        report: { restoreVersion: preview.restoreVersion, before: preview.current, changed: preview.changes },
-      });
+      return send(response, 200, { id: row.note_id, ownerId: row.owner_id, contentSha256: copy.content_sha256, restored: true });
     });
   }
 

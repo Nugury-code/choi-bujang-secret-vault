@@ -19,7 +19,8 @@
     "POST /api/auth/refresh",
     "POST /api/auth/logout",
     "POST /api/notes/:id/restore",
-    "GET /api/notes/:id/restore"
+    "GET /api/notes/:id/restore",
+    "POST /api/device"
   ],
   "originalApiUrl": "https://hphdsuxmehoshbcdyjvc.supabase.co/rest/v1/vault_notes",
   "restoreRoute": "POST /api/notes/:id/restore"

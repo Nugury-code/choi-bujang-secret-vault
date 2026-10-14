@@ -76,6 +76,74 @@ function refreshSession() {
   return refreshing;
 }
 
+// 기기 승인(11단계). 이 기기의 키 한 쌍은 이 페이지의 메모리에만 두고 어떤 저장소에도 쓰지 않습니다(새로고침하면 사라져 다시 요청해야 합니다).
+// 서버가 준 status가 'approved'일 때만 자료를 불러옵니다. 요청 단추는 요청을 보낼 뿐이고 권한은 서버가 정합니다.
+const deviceStatusText = $('device-status');
+const deviceButton = $('device-request');
+const deviceErrorBox = $('device-error');
+const DEVICE_TEXT = {
+  signedOut: '로그인하면 이 기기의 승인을 요청할 수 있습니다. 앱 설치 표시만으로 기기 확인이 끝난 것이 아니며, 승인 여부는 서버가 정합니다.',
+  none: '이 기기는 아직 승인되지 않았습니다. 승인 전에는 자료를 표시하지 않습니다. 요청 단추는 요청을 보낼 뿐 권한을 주지 않습니다.',
+  pending: '승인 대기 중입니다. 서버가 아직 이 기기를 등록 기기로 확인하지 않았습니다. 승인된 뒤에 "승인 상태 확인"을 눌러 주세요.',
+  approved: '서버가 이 기기를 등록 기기로 확인했습니다.',
+  rejected: '서버가 이 기기를 승인하지 않았습니다. 자료를 표시하지 않습니다.',
+};
+let deviceStatus = 'none';
+let deviceKeys = null;
+
+const toBase64 = (buffer) => btoa(String.fromCharCode(...new Uint8Array(buffer)));
+const hex = (buffer) => [...new Uint8Array(buffer)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+
+function paintDevice() {
+  const signedInNow = Boolean(token);
+  deviceStatusText.textContent = signedInNow ? DEVICE_TEXT[deviceStatus] : DEVICE_TEXT.signedOut;
+  deviceButton.hidden = !signedInNow || deviceStatus === 'approved' || deviceStatus === 'rejected';
+  deviceButton.textContent = deviceStatus === 'pending' ? '승인 상태 확인' : '기기 승인 요청';
+}
+
+function resetDevice() {
+  deviceStatus = 'none';
+  deviceKeys = null;
+  deviceErrorBox.hidden = true;
+  paintDevice();
+}
+
+// 이 기기의 키(ECDSA P-256)를 한 번 만들고, 지문과 현재 시각에 서명해 서버에 보냅니다. 개인 키는 내보내지 않습니다(extractable: false).
+async function requestDevice() {
+  deviceErrorBox.hidden = true;
+  deviceButton.disabled = true;
+  try {
+    deviceKeys ??= await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+    const spki = await crypto.subtle.exportKey('spki', deviceKeys.publicKey);
+    const fingerprint = hex(await crypto.subtle.digest('SHA-256', spki));
+    const signedAt = Date.now();
+    const text = new TextEncoder().encode(`byte-back-device-request\n${fingerprint}\n${signedAt}`);
+    const signature = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, deviceKeys.privateKey, text);
+    const result = await authCall('/api/device', { publicKey: toBase64(spki), signature: toBase64(signature), signedAt }, token);
+    if (result.status === 200 && ['pending', 'approved', 'rejected'].includes(result.data?.status)) {
+      deviceStatus = result.data.status;
+    } else if (result.status === 401) {
+      deviceErrorBox.textContent = '로그인 확인에 실패했습니다. 다시 로그인해 주세요.';
+    } else if (result.status === 429) {
+      deviceErrorBox.textContent = '요청이 너무 많습니다. 잠시 뒤에 다시 시도해 주세요.';
+    } else {
+      deviceErrorBox.textContent = '기기 승인 요청을 처리하지 못했습니다. 잠시 뒤에 다시 시도해 주세요.';
+    }
+    deviceErrorBox.hidden = !deviceErrorBox.textContent || result.status === 200;
+  } catch {
+    deviceErrorBox.textContent = '이 브라우저에서 기기 키를 만들지 못했습니다.';
+    deviceErrorBox.hidden = false;
+  } finally {
+    deviceButton.disabled = false;
+    paintDevice();
+    loadedFor = undefined;
+    loadNotes(currentUserId);
+  }
+}
+deviceButton.addEventListener('click', requestDevice);
+
+let currentUserId = null;
+
 function render(session) {
   const email = session?.user?.email ?? '';
   document.body.dataset.auth = session ? 'signed-in' : 'signed-out';
@@ -84,6 +152,10 @@ function render(session) {
   $('account-email').textContent = email;
   status.textContent = session ? '로그인되어 있습니다.' : '로그인하지 않은 상태입니다.';
   token = session?.access_token ?? null;
+  const nextUserId = session?.user?.id ?? null;
+  if (nextUserId !== currentUserId) resetDevice();
+  currentUserId = nextUserId;
+  paintDevice();
   if (session) scheduleRefresh(session);
   else clearTimeout(refreshTimer);
   loadNotes(session?.user?.id ?? null);
@@ -243,6 +315,15 @@ async function fetchList() {
 
 // 로그인한 사용자가 바뀔 때(로그인·로그아웃)만 목록을 다시 읽습니다. 토큰 갱신만으로는 입력 중인 수정 창을 닫지 않습니다.
 async function loadNotes(userId) {
+  // 기기 승인 전에는 자료를 부르지도 보여 주지도 않습니다. 서버가 'approved'라고 답한 뒤에만 불러옵니다.
+  if (userId && deviceStatus !== 'approved') {
+    loadedFor = undefined;
+    loadId += 1;
+    editor.hidden = true;
+    showNoteError('');
+    showNotesMessage('기기 승인 전에는 자료를 표시하지 않습니다.');
+    return;
+  }
   if (loadedFor === userId) return;
   loadedFor = userId;
   editor.hidden = !userId;
@@ -270,6 +351,13 @@ noteForm.addEventListener('submit', async (event) => {
     body.value = '';
   });
 });
+
+// 오프라인 안내: 연결이 끊기면 안내를 보이고, 돌아오면 숨깁니다.
+const offlineNotice = $('offline-notice');
+function showOffline() { offlineNotice.hidden = navigator.onLine; }
+window.addEventListener('offline', showOffline);
+window.addEventListener('online', showOffline);
+showOffline();
 
 function setupAuth() {
   form.addEventListener('submit', async (event) => {

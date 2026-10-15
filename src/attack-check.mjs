@@ -293,7 +293,8 @@ async function runDirectChecks(config, app) {
   else searched = `공개 파일 ${readable.length}개(${readable.map((file) => file.path).join(', ')})에서 서버 전용 키 모양·Supabase 공개 키 모양·로그인 토큰 모양·가상 메모 확인 표시가 보이지 않음`;
   if (readable.length && readable.length < PUBLIC_FILES.length) searched += ` (읽지 못한 파일 ${PUBLIC_FILES.length - readable.length}개)`;
   const received = files.filter((file) => file.status !== null);
-  if (received.length) searched += ` · 요청 ID ${received.map((file) => file.requestId || '없음').join(' / ')} · 확인 시각 ${received[received.length - 1].at}`;
+  // 받은 응답마다 HTTP 상태와 요청 ID를 같은 순서(/, /app.js, /data.json)로 적습니다. 확인 시각은 마지막 응답을 받은 시각입니다.
+  if (received.length) searched += ` · HTTP ${received.map((file) => file.status).join('/')} · 요청 ID ${received.map((file) => file.requestId || '없음').join(' / ')} · 확인 시각 ${received[received.length - 1].at}`;
   results.push({ attackId: 'static_files_have_no_server_secret', expected: '공개 정적 파일과 브라우저 묶음에서 서버 전용 키·공개 키·확인 표시가 보이지 않음', observed: searched });
   return results;
 }

@@ -380,6 +380,8 @@ test('요청을 보낸 점검은 실제 응답의 상태·요청 ID·확인 시�
       assert.ok(Date.parse(found[2]) >= startedAt && Date.parse(found[2]) <= Date.now() + 1000);
     }
     assert.match(sent.find(item => item.attackId === 'anonymous_note_read').observed, /HTTP 401/u);
+    assert.match(sent.find(item => item.attackId === 'static_files_have_no_server_secret').observed, / · HTTP 200\/200\/200 · 요청 ID /u, '요청을 보낸 모든 점검에 HTTP 상태가 있어야 합니다');
+    for (const item of sent) assert.match(item.observed, /HTTP \d{3}/u, `${item.attackId}에 HTTP 상태가 있어야 합니다`);
     assert.ok(results.every(item => item.observed.length <= 300 && item.expected.length <= 300), '글자 수 제한(300자)');
     for (const id of ['anonymous_note_create', 'anonymous_note_update', 'anonymous_note_delete', 'anonymous_restore', 'anonymous_device_request',
       'direct_data_api_read', 'direct_data_api_update', 'restore_backup_note', 'device_approval_flow', 'ops_room_summary', 'cross_owner_access']) {

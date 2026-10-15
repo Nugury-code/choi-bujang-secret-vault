@@ -199,7 +199,7 @@ test('step 4 attack check keeps the login-free requests and records the A/B owne
       'cross_owner_access']);
     for (const index of [1, 5, 6, 7]) assert.match(results[index].observed, /자료 없이 거절됨 \(HTTP 401\)/u);
     for (const index of [2, 3, 4]) assert.equal(results[index].observed, 'not_run');
-    assert.match(results[8].observed, /^미실행/u);
+    assert.equal(results[8].observed, 'not_run');
     assert.ok(results.every(item => item.expected.length <= 300 && item.observed.length <= 300));
     const text = JSON.stringify(results);
     assert.ok(!/Bearer|eyJ|sb_secret_|@/u.test(text));
@@ -210,7 +210,7 @@ test('step 4 attack check keeps the login-free requests and records the A/B owne
       : new Response(JSON.stringify([{ id: 'x', title: 'SECRET_TITLE', body: 'SECRET_BODY' }]), { status: 200 }));
     const open = await runAttackChecks(step4);
     assert.match(open[1].observed, /막히지 않고 성공함 \(HTTP 200\)/u);
-    assert.match(open[8].observed, /^미실행/u);
+    assert.equal(open[8].observed, 'not_run');
     assert.ok(!JSON.stringify(open).includes('SECRET_'));
   } finally {
     globalThis.fetch = originalFetch;
@@ -257,7 +257,7 @@ test('step 5 attack check calls the original data API with the given public key,
     assert.match(results[8].observed, /자료 없이 거절됨 \(HTTP 401\)/u);
     assert.equal(results[9].observed, 'not_run', '공개 키 직접 수정(PATCH)은 보내지 않고 not_run');
     assert.match(results[10].observed, /3개\(.*\)에서 서버 전용 키 모양·Supabase 공개 키 모양·로그인 토큰 모양·가상 메모 확인 표시가 보이지 않음/u);
-    assert.match(results[11].observed, /^미실행/u);
+    assert.equal(results[11].observed, 'not_run');
     const direct = calls.filter(call => call.href.startsWith(ORIGINAL));
     assert.deepEqual(direct.map(call => call.method), ['GET']);
     assert.ok(direct.every(call => call.apikey === PUBLIC_KEY && !call.auth), '공개 키만 쓰고 로그인 토큰은 쓰지 않습니다');
@@ -289,12 +289,12 @@ test('step 5 attack check calls the original data API with the given public key,
     delete process.env.SUPABASE_PUBLISHABLE_KEY;
     install();
     const noKey = await runAttackChecks(step5);
-    assert.match(noKey[8].observed, /^미실행: 공개 키가 없어/u);
+    assert.equal(noKey[8].observed, 'not_run');
     assert.equal(calls.filter(call => call.href.startsWith(ORIGINAL)).length, 0);
     process.env.SUPABASE_PUBLISHABLE_KEY = PUBLIC_KEY;
     install();
     const noUrl = await runAttackChecks({ ...step5, originalApiUrl: null });
-    assert.match(noUrl[8].observed, /^미실행: aleph\.config\.json의 originalApiUrl이 없어/u);
+    assert.equal(noUrl[8].observed, 'not_run');
     assert.equal(noUrl[9].observed, 'not_run');
 
     globalThis.fetch = async () => { throw new Error('network'); };
@@ -338,10 +338,65 @@ test('step 12 attack check adds the login-free ops read and records the logged-i
       assert.ok(results.some(item => item.attackId === id), `${id} 항목은 not_run으로 남아 있어야 합니다`);
     }
     const summary = results.find(item => item.attackId === 'ops_room_summary');
-    assert.match(summary.observed, /^미실행/u);
+    assert.equal(summary.observed, 'not_run');
     assert.equal(new Set(results.map(item => item.attackId)).size, results.length);
     assert.ok(results.length <= 20);
     assert.ok(!/Bearer|eyJ|sb_secret_|@/u.test(JSON.stringify(results)));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('요청을 보낸 점검은 실제 응답의 상태·요청 ID·확인 시각을 결과에 붙이고, 보내지 않은 점검은 정확히 not_run', async () => {
+  const originalFetch = globalThis.fetch;
+  const step12 = {
+    ...config,
+    step: 12,
+    originalApiUrl: '',
+    identityProvider: {
+      issuer: 'https://project.supabase.co/auth/v1', audience: 'authenticated',
+      jwksUrl: 'https://project.supabase.co/auth/v1/.well-known/jwks.json',
+    },
+  };
+  const files = { '/': '<html>자료실</html>', '/app.js': 'const none = 1;', '/data.json': '{"notes":[]}' };
+  const sentIds = [];
+  const startedAt = Date.now() - 1000;
+  try {
+    globalThis.fetch = async (url) => {
+      const target = new URL(String(url));
+      const id = `icn1::iad1::test1-${1760504000000 + sentIds.length}-ab12cd34ef56`;
+      sentIds.push(id);
+      const headers = { 'x-vercel-id': id };
+      if (target.pathname in files) return new Response(files[target.pathname], { status: 200, headers });
+      return new Response(JSON.stringify({ error: 'UNAUTHORIZED' }), { status: 401, headers });
+    };
+    const results = await runAttackChecks(step12);
+    const sent = results.filter(item => item.observed !== 'not_run');
+    assert.equal(sent.length, 7, "요청을 실제로 보낸 점검은 7개");
+    for (const item of sent) {
+      const found = /요청 ID (.+?) · 확인 시각 (\d{4}-\d\d-\d\dT[\d:.]+Z)$/u.exec(item.observed);
+      assert.ok(found, `${item.attackId}에 요청 ID와 확인 시각이 있어야 합니다: ${item.observed}`);
+      for (const id of found[1].split(' / ')) assert.ok(sentIds.includes(id), `${item.attackId}의 요청 ID는 실제 응답 헤더 값이어야 합니다`);
+      assert.ok(Date.parse(found[2]) >= startedAt && Date.parse(found[2]) <= Date.now() + 1000);
+    }
+    assert.match(sent.find(item => item.attackId === 'anonymous_note_read').observed, /HTTP 401/u);
+    assert.ok(results.every(item => item.observed.length <= 300 && item.expected.length <= 300), '글자 수 제한(300자)');
+    for (const id of ['anonymous_note_create', 'anonymous_note_update', 'anonymous_note_delete', 'anonymous_restore', 'anonymous_device_request',
+      'direct_data_api_read', 'direct_data_api_update', 'restore_backup_note', 'device_approval_flow', 'ops_room_summary', 'cross_owner_access']) {
+      assert.equal(results.find(item => item.attackId === id)?.observed, 'not_run', id);
+    }
+
+    // 요청 ID 헤더가 없으면 지어내지 않고 「없음」으로 적습니다.
+    globalThis.fetch = async (url) => (new URL(String(url)).pathname in files
+      ? new Response(files[new URL(String(url)).pathname], { status: 200 })
+      : new Response(JSON.stringify({ error: 'UNAUTHORIZED' }), { status: 401 }));
+    const noHeader = await runAttackChecks(step12);
+    assert.match(noHeader.find(item => item.attackId === 'anonymous_note_read').observed, /요청 ID 없음 · 확인 시각 /u);
+
+    // 응답을 받지 못한 요청에는 요청 ID와 시각을 붙이지 않습니다.
+    globalThis.fetch = async () => { throw new Error('network'); };
+    const failed = await runAttackChecks(step12);
+    assert.ok(failed.filter(item => item.observed !== 'not_run').every(item => !/요청 ID|확인 시각/u.test(item.observed)));
   } finally {
     globalThis.fetch = originalFetch;
   }

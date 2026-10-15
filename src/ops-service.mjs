@@ -9,11 +9,11 @@ import { createLoginVerifier } from './verify-login.mjs';
 // 네 가지 요약마다 status가 있습니다. observed = 이 서버가 이번 요청에서 직접 읽은 것, not_run = 이 서버가 읽을 곳이 없어 실행하지 않은 것.
 // - 판정기 규칙: src/decider.mjs의 RULE_IDS (observed)
 // - 탐지 사건, 회수 상태: 이 서버는 탐지 사건을 받거나 저장하지 않고 접속 회수를 실행하지도 않아 값을 만들지 않고 not_run
-// - 복구 버전: 정책 사본(verifySnapshot으로 검증한 단계·지문 앞 12자리)과, 복원 감사 기록 restore_audit의 로그인한 사용자 본인의 최근 줄
+// - 복구 버전: 정책 사본(verifySnapshot으로 검증한 단계·지문 앞 12자리)과, 복원 감사 기록 restore_audit의 로그인한 사용자 본인의 줄(최신순)
 //   결과별 수는 화면에 보이는 그 줄들에서 센 값이라 목록과 항상 맞습니다.
 // - 메모 제목·본문, 이메일, 사용자 ID, 토큰은 응답에 없고 메모 번호는 앞 8자리만 있습니다.
-// 이름(status 값, 칸 이름), 최근 줄 수 10, 가린 뒤 보이는 자리 8은 내가 정한 값: 짐작.
-export const RECENT = 10;
+// 줄 수 상한은 두지 않습니다(읽어 온 줄을 전부 셉니다). 단 Supabase 기본 설정은 한 번에 1000줄까지만 돌려준다고 알고 있어 그 이상이면 잘릴 수 있음(확인 못 함).
+// 이름(status 값, 칸 이름), 가린 뒤 보이는 자리 8은 내가 정한 값: 짐작.
 export const MASK_CHARS = 8;
 
 const defaultCreateDb = (url, key) => createClient(url, key, {
@@ -74,7 +74,7 @@ export function createOpsService({ loginConfig = config, verifierOptions = {}, c
     try {
       const { data, error } = await createDb(url, key).from('restore_audit')
         .select('at, note_id, outcome, status').eq('owner_id', identity.userId)
-        .order('at', { ascending: false }).limit(RECENT);
+        .order('at', { ascending: false });
       if (error) throw error;
       audit = summarizeAudit(data ?? []);
     } catch (error) {

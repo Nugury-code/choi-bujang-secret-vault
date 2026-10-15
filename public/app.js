@@ -334,7 +334,7 @@ function renderOps(data) {
     opsItem('복구 버전', null, [
       ['정책 사본', snap, `단계 ${snap?.step}, 지문 ${snap?.digest}`],
       ['복원 기록', audit, Array.isArray(audit?.recent)
-        ? `최근 ${audit.total}건 (${Object.entries(audit.byOutcome ?? {}).map(([name, count]) => `${name} ${count}`).join(', ') || '없음'})` : null],
+        ? `${audit.total}건 (${Object.entries(audit.byOutcome ?? {}).map(([name, count]) => `${name} ${count}`).join(', ') || '없음'})` : null],
     ]),
   ];
   if (audit?.status === 'observed' && Array.isArray(audit.recent)) {

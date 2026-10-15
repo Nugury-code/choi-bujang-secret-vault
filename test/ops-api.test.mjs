@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
 import config from '../aleph.config.json' with { type: 'json' };
 import { RULE_IDS } from '../src/decider.mjs';
-import { createOpsService, MASK_CHARS, RECENT } from '../src/ops-service.mjs';
+import { createOpsService, MASK_CHARS } from '../src/ops-service.mjs';
 
 const STUDENT = config.identityProvider;
 const USER_A = '0b8c1d52-3a41-4e7e-9d3a-6f2f7c1a9b10';
@@ -100,10 +100,11 @@ test('정책 사본은 검증해 단계·지문 앞 12자리, 깨진 사본은 n
 });
 
 test('수치(전체 수·결과별 수)와 가린 기록이 같은 줄에서 나와 항상 맞는다', async () => {
-  for (let n = 0; n < RECENT + 5; n += 1) rows.push(row(n, n % 3 === 0 ? { outcome: 'hash_mismatch', status: 409, note_id: NOTE_2 } : {}));
+  const TOTAL = 15;
+  for (let n = 0; n < TOTAL; n += 1) rows.push(row(n, n % 3 === 0 ? { outcome: 'hash_mismatch', status: 409, note_id: NOTE_2 } : {}));
   const { audit } = (await call(service().handleOps)).body.recovery;
   assert.equal(audit.status, 'observed');
-  assert.equal(audit.recent.length, RECENT);
+  assert.equal(audit.recent.length, TOTAL, '상한 없이 본인 줄을 전부 보여 줌');
   assert.equal(audit.total, audit.recent.length);
   const counted = {};
   for (const r of audit.recent) counted[r.outcome] = (counted[r.outcome] ?? 0) + 1;

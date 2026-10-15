@@ -46,29 +46,25 @@ async function send(app, path, { method = 'GET', token, body, headers: extraHead
       method, headers, redirect: 'error', signal: AbortSignal.timeout(10000),
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    const at = new Date().toISOString();
     let data = null;
     try {
       data = await response.json();
     } catch {
       // JSON이 아닌 응답은 본문 없음으로 처리합니다.
     }
-    return { status: response.status, body: data, requestId: response.headers.get('x-vercel-id'), at: at };
+    return { status: response.status, body: data };
   } catch {
     return { status: null, body: null };
   }
 }
 
-// 실제로 받은 응답의 요청 ID(응답 헤더 x-vercel-id)와 확인 시각(응답을 받은 시각)을 결과 글자에 붙입니다.
-// 헤더가 없으면 「없음」으로 적고 지어내지 않습니다. 응답을 받지 못한 요청에는 붙이지 않습니다.
-const trace = (r) => (r.status === null ? '' : ` · 요청 ID ${r.requestId || '없음'} · 확인 시각 ${r.at}`);
+// 응답을 받지 못한 요청(보낸 기록이 남지 않은 요청)은 not_run으로 적고, 받은 응답이 있는 요청에는 받은 HTTP 상태만 적습니다.
 
 // 파일 내용을 검색하려고 글자 그대로 읽습니다. 내용은 기록하지 않습니다.
 async function fetchText(app, path) {
   try {
     const response = await fetch(new URL(path, app), { redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(10000) });
-    const at = new Date().toISOString();
-    return { status: response.status, text: response.ok ? await response.text() : '', requestId: response.headers.get('x-vercel-id'), at };
+    return { status: response.status, text: response.ok ? await response.text() : '' };
   } catch {
     return { status: null, text: '' };
   }
@@ -80,7 +76,7 @@ async function staticDataCheck(config, app) {
   const body = result.body;
   let observed;
   if (result.status === null) {
-    observed = '요청이 실패해 확인하지 못함';
+    observed = 'not_run';
   } else if (result.status !== 200 || !body || !Array.isArray(body.notes)) {
     observed = `공개 data.json을 읽지 못함 (HTTP ${result.status})`;
   } else if (body.notes.length === 0 && !('sampleMarker' in body)
@@ -89,7 +85,7 @@ async function staticDataCheck(config, app) {
   } else {
     observed = `비로그인 요청에서 메모 ${body.notes.length}건 또는 확인 표시가 보임 (HTTP 200)`;
   }
-  return { attackId: 'static_data_has_no_notes', expected: '공개 data.json에 메모와 확인 표시가 없음', observed: `${observed}${trace(result)}` };
+  return { attackId: 'static_data_has_no_notes', expected: '공개 data.json에 메모와 확인 표시가 없음', observed };
 }
 
 const noteCount = (body) => (Array.isArray(body) ? body.length : Array.isArray(body?.notes) ? body.notes.length : null);
@@ -99,7 +95,7 @@ async function runStep2Checks(config, app) {
   const apiResult = await send(app, '/api/notes');
   let apiObserved;
   if (apiResult.status === null) {
-    apiObserved = '요청이 실패해 확인하지 못함';
+    apiObserved = 'not_run';
   } else if (apiResult.status === 200 && noteCount(apiResult.body) !== null) {
     apiObserved = `로그인 없이 서버 함수가 메모 ${noteCount(apiResult.body)}건을 내려 줌 (HTTP 200). 토큰 검사가 막지 못한 공개 약점`;
   } else if (apiResult.status === 401 && noteCount(apiResult.body) === null) {
@@ -109,7 +105,7 @@ async function runStep2Checks(config, app) {
   }
   return [
     staticResult,
-    { attackId: 'anonymous_api_read', expected: '로그인 토큰 없이 서버 함수를 부르면 자료 없이 거절됨 (HTTP 401)', observed: `${apiObserved}${trace(apiResult)}` },
+    { attackId: 'anonymous_api_read', expected: '로그인 토큰 없이 서버 함수를 부르면 자료 없이 거절됨 (HTTP 401)', observed: apiObserved },
   ];
 }
 
@@ -157,10 +153,10 @@ async function runLoginChecks(config, app) {
   const unknownId = randomUUID();
   const outcome = (what, r, note) => {
     const suffix = note ? ` ${note}` : '';
-    if (r.status === null) return `요청이 실패해 확인하지 못함${suffix}`;
-    if (r.status === 401 && noteCount(r.body) === null && !r.body?.id) return `${what} 요청이 자료 없이 거절됨 (HTTP 401)${suffix}${trace(r)}`;
-    if (r.status >= 200 && r.status < 300) return `${what} 요청이 막히지 않고 성공함 (HTTP ${r.status}). 막지 못한 약점${suffix}${trace(r)}`;
-    return `${what} 요청의 응답이 401이 아님 (HTTP ${r.status}). 거절 방식을 확인해야 함${suffix}${trace(r)}`;
+    if (r.status === null) return 'not_run';
+    if (r.status === 401 && noteCount(r.body) === null && !r.body?.id) return `${what} 요청이 자료 없이 거절됨 (HTTP 401)${suffix}`;
+    if (r.status >= 200 && r.status < 300) return `${what} 요청이 막히지 않고 성공함 (HTTP ${r.status}). 막지 못한 약점${suffix}`;
+    return `${what} 요청의 응답이 401이 아님 (HTTP ${r.status}). 거절 방식을 확인해야 함${suffix}`;
   };
   const attempts = [
     { attackId: 'anonymous_note_read', what: '로그인 토큰 없이 목록 읽기', path: '/api/notes' },
@@ -269,11 +265,11 @@ async function runDirectChecks(config, app) {
     const headers = { apikey: key };
     const read = await send(original, original.href, { headers });
     let readObserved;
-    if (read.status === null) readObserved = '요청이 실패해 확인하지 못함';
+    if (read.status === null) readObserved = 'not_run';
     else if (read.status === 401 || read.status === 403) readObserved = `공개 키로 원본 자료 API를 직접 조회하면 자료 없이 거절됨 (HTTP ${read.status})`;
     else if (read.status >= 200 && read.status < 300) readObserved = `공개 키로 원본 자료 API를 직접 조회하는 요청이 막히지 않고 성공함 (HTTP ${read.status}). 막지 못한 약점`;
     else readObserved = `공개 키로 원본 자료 API를 직접 조회한 응답이 401·403이 아님 (HTTP ${read.status}). 거절 방식을 확인해야 함`;
-    results.push({ attackId: 'direct_data_api_read', expected: readExpected, observed: `${readObserved}${trace(read)}` });
+    results.push({ attackId: 'direct_data_api_read', expected: readExpected, observed: readObserved });
 
     // 공개 키로 원본 자료를 수정하는 요청(PATCH)은 쓰기 요청이라 보내지 않고 not_run으로 남깁니다.
     results.push({ attackId: 'direct_data_api_update', expected: updateExpected, observed: 'not_run' });
@@ -287,14 +283,15 @@ async function runDirectChecks(config, app) {
     if (TOKEN_PATTERN.test(file.text)) found.push(`${file.path}에 로그인 토큰 모양`);
     if (file.text.includes(config.sampleMarker)) found.push(`${file.path}에 가상 메모 확인 표시`);
   }
+  const received = files.filter((file) => file.status !== null);
   let searched;
-  if (!readable.length) searched = '공개 파일을 읽지 못해 확인하지 못함';
+  if (!received.length) searched = 'not_run';
+  else if (!readable.length) searched = '공개 파일을 읽지 못해 확인하지 못함';
   else if (found.length) searched = `공개 파일 ${readable.length}개에서 ${found.join(', ')}가 보임. 막지 못한 약점`;
   else searched = `공개 파일 ${readable.length}개(${readable.map((file) => file.path).join(', ')})에서 서버 전용 키 모양·Supabase 공개 키 모양·로그인 토큰 모양·가상 메모 확인 표시가 보이지 않음`;
   if (readable.length && readable.length < PUBLIC_FILES.length) searched += ` (읽지 못한 파일 ${PUBLIC_FILES.length - readable.length}개)`;
-  const received = files.filter((file) => file.status !== null);
-  // 받은 응답마다 HTTP 상태와 요청 ID를 같은 순서(/, /app.js, /data.json)로 적습니다. 확인 시각은 마지막 응답을 받은 시각입니다.
-  if (received.length) searched += ` · HTTP ${received.map((file) => file.status).join('/')} · 요청 ID ${received.map((file) => file.requestId || '없음').join(' / ')} · 확인 시각 ${received[received.length - 1].at}`;
+  // 받은 응답마다 HTTP 상태만 같은 순서(/, /app.js, /data.json)로 적습니다.
+  if (received.length) searched += ` · HTTP ${received.map((file) => file.status).join('/')}`;
   results.push({ attackId: 'static_files_have_no_server_secret', expected: '공개 정적 파일과 브라우저 묶음에서 서버 전용 키·공개 키·확인 표시가 보이지 않음', observed: searched });
   return results;
 }

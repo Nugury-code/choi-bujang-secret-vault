@@ -119,7 +119,7 @@ test('step 2 attack check records the static file and the anonymous API without 
     assert.match(denied.observed, /자료 없이 거절됨 \(HTTP 401\)/u);
     globalThis.fetch = async () => { throw new Error('network'); };
     const [failed] = await runAttackChecks({ ...config, step: 2 });
-    assert.match(failed.observed, /확인하지 못함/u);
+    assert.equal(failed.observed, 'not_run');
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -166,7 +166,7 @@ test('step 3 attack check sends only requests that need no login and records sta
 
     globalThis.fetch = async () => { throw new Error('network'); };
     const failed = await runAttackChecks(step3);
-    assert.match(failed[1].observed, /확인하지 못함/u);
+    assert.equal(failed[1].observed, 'not_run', '응답이 없으면 not_run');
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -299,7 +299,7 @@ test('step 5 attack check calls the original data API with the given public key,
 
     globalThis.fetch = async () => { throw new Error('network'); };
     const failed = await runAttackChecks(step5);
-    assert.match(failed[10].observed, /읽지 못해 확인하지 못함/u);
+    assert.equal(failed[10].observed, 'not_run');
   } finally {
     globalThis.fetch = originalFetch;
     if (originalEnv === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
@@ -347,7 +347,7 @@ test('step 12 attack check adds the login-free ops read and records the logged-i
   }
 });
 
-test('요청을 보낸 점검은 실제 응답의 상태·요청 ID·확인 시각을 결과에 붙이고, 보내지 않은 점검은 정확히 not_run', async () => {
+test('요청을 보낸 점검은 받은 HTTP 상태만 observed에 적고, 응답이 없거나 보내지 않은 점검은 정확히 not_run', async () => {
   const originalFetch = globalThis.fetch;
   const step12 = {
     ...config,
@@ -359,46 +359,33 @@ test('요청을 보낸 점검은 실제 응답의 상태·요청 ID·확인 시�
     },
   };
   const files = { '/': '<html>자료실</html>', '/app.js': 'const none = 1;', '/data.json': '{"notes":[]}' };
-  const sentIds = [];
-  const startedAt = Date.now() - 1000;
   try {
     globalThis.fetch = async (url) => {
       const target = new URL(String(url));
-      const id = `icn1::iad1::test1-${1760504000000 + sentIds.length}-ab12cd34ef56`;
-      sentIds.push(id);
-      const headers = { 'x-vercel-id': id };
+      const headers = { 'x-vercel-id': 'icn1::iad1::test1-1760504000000-ab12cd34ef56' };
       if (target.pathname in files) return new Response(files[target.pathname], { status: 200, headers });
       return new Response(JSON.stringify({ error: 'UNAUTHORIZED' }), { status: 401, headers });
     };
     const results = await runAttackChecks(step12);
     const sent = results.filter(item => item.observed !== 'not_run');
-    assert.equal(sent.length, 7, "요청을 실제로 보낸 점검은 7개");
+    assert.equal(sent.length, 7, '요청을 실제로 보낸 점검은 7개');
     for (const item of sent) {
-      const found = /요청 ID (.+?) · 확인 시각 (\d{4}-\d\d-\d\dT[\d:.]+Z)$/u.exec(item.observed);
-      assert.ok(found, `${item.attackId}에 요청 ID와 확인 시각이 있어야 합니다: ${item.observed}`);
-      for (const id of found[1].split(' / ')) assert.ok(sentIds.includes(id), `${item.attackId}의 요청 ID는 실제 응답 헤더 값이어야 합니다`);
-      assert.ok(Date.parse(found[2]) >= startedAt && Date.parse(found[2]) <= Date.now() + 1000);
+      assert.match(item.observed, /HTTP \d{3}/u, `${item.attackId}에 받은 HTTP 상태가 있어야 합니다`);
+      assert.ok(!/요청 ID|확인 시각|icn1/u.test(item.observed), `${item.attackId}에는 HTTP 상태 외의 요청 ID·시각을 적지 않습니다`);
     }
-    assert.match(sent.find(item => item.attackId === 'anonymous_note_read').observed, /HTTP 401/u);
-    assert.match(sent.find(item => item.attackId === 'static_files_have_no_server_secret').observed, / · HTTP 200\/200\/200 · 요청 ID /u, '요청을 보낸 모든 점검에 HTTP 상태가 있어야 합니다');
-    for (const item of sent) assert.match(item.observed, /HTTP \d{3}/u, `${item.attackId}에 HTTP 상태가 있어야 합니다`);
+    assert.match(sent.find(item => item.attackId === 'anonymous_note_read').observed, /\(HTTP 401\)$/u);
+    assert.match(sent.find(item => item.attackId === 'static_files_have_no_server_secret').observed, / · HTTP 200\/200\/200$/u);
     assert.ok(results.every(item => item.observed.length <= 300 && item.expected.length <= 300), '글자 수 제한(300자)');
     for (const id of ['anonymous_note_create', 'anonymous_note_update', 'anonymous_note_delete', 'anonymous_restore', 'anonymous_device_request',
       'direct_data_api_read', 'direct_data_api_update', 'restore_backup_note', 'device_approval_flow', 'ops_room_summary', 'cross_owner_access']) {
       assert.equal(results.find(item => item.attackId === id)?.observed, 'not_run', id);
     }
 
-    // 요청 ID 헤더가 없으면 지어내지 않고 「없음」으로 적습니다.
-    globalThis.fetch = async (url) => (new URL(String(url)).pathname in files
-      ? new Response(files[new URL(String(url)).pathname], { status: 200 })
-      : new Response(JSON.stringify({ error: 'UNAUTHORIZED' }), { status: 401 }));
-    const noHeader = await runAttackChecks(step12);
-    assert.match(noHeader.find(item => item.attackId === 'anonymous_note_read').observed, /요청 ID 없음 · 확인 시각 /u);
-
-    // 응답을 받지 못한 요청에는 요청 ID와 시각을 붙이지 않습니다.
+    // 응답을 하나도 받지 못하면 점검 전부 not_run이고, 상태를 지어내지 않습니다.
     globalThis.fetch = async () => { throw new Error('network'); };
     const failed = await runAttackChecks(step12);
-    assert.ok(failed.filter(item => item.observed !== 'not_run').every(item => !/요청 ID|확인 시각/u.test(item.observed)));
+    assert.ok(failed.every(item => item.observed === 'not_run'));
+    assert.ok(!JSON.stringify(failed).includes('실패'));
   } finally {
     globalThis.fetch = originalFetch;
   }

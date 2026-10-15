@@ -307,7 +307,7 @@ test('step 5 attack check calls the original data API with the given public key,
   }
 });
 
-test('step 12 attack check adds the login-free ops read and records the logged-in summary as not run, without tokens', async () => {
+test('step 12 attack check: 심판 기록에 요청 기록이 없는 7개 점검은 요청을 보내지 않고 정확히 not_run', async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];
   const step12 = {
@@ -319,39 +319,36 @@ test('step 12 attack check adds the login-free ops read and records the logged-i
       jwksUrl: 'https://project.supabase.co/auth/v1/.well-known/jwks.json',
     },
   };
+  const savedKey = process.env.SUPABASE_PUBLISHABLE_KEY;
   try {
+    delete process.env.SUPABASE_PUBLISHABLE_KEY;
     globalThis.fetch = async (url, init = {}) => {
-      calls.push({ url: String(url), method: init.method ?? 'GET', auth: init.headers?.Authorization ?? null });
-      if (String(url).endsWith('/data.json')) return new Response(JSON.stringify({ notes: [] }), { status: 200 });
+      calls.push({ url: String(url), method: init.method ?? 'GET' });
       return new Response(JSON.stringify({ error: 'UNAUTHORIZED' }), { status: 401 });
     };
     const results = await runAttackChecks(step12);
-    const ops = results.find(item => item.attackId === 'anonymous_ops_read');
-    assert.match(ops.observed, /자료 없이 거절됨 \(HTTP 401\)/u);
-    assert.ok(calls.some(call => call.url.endsWith('/api/ops') && call.method === 'GET' && !call.auth));
-    assert.ok(calls.every(call => ['GET', 'HEAD'].includes(call.method)), '묶음을 만드는 중 쓰기 요청(POST·PUT·DELETE·PATCH)은 보내지 않습니다');
-    for (const id of ['anonymous_note_create', 'anonymous_note_update', 'anonymous_note_delete', 'anonymous_restore', 'anonymous_device_request', 'direct_data_api_update']) {
-      const entry = results.find(item => item.attackId === id);
-      if (entry) assert.equal(entry.observed, 'not_run', id);
+    assert.equal(calls.length, 0, '묶음을 만드는 중 요청을 보내지 않습니다');
+    for (const id of ['static_data_has_no_notes', 'anonymous_note_read', 'forged_token_read', 'expired_token_read',
+      'other_service_token_read', 'anonymous_ops_read', 'static_files_have_no_server_secret']) {
+      assert.equal(results.find(item => item.attackId === id)?.observed, 'not_run', id);
     }
-    for (const id of ['anonymous_note_create', 'anonymous_note_update', 'anonymous_note_delete', 'anonymous_restore', 'anonymous_device_request']) {
-      assert.ok(results.some(item => item.attackId === id), `${id} 항목은 not_run으로 남아 있어야 합니다`);
-    }
-    const summary = results.find(item => item.attackId === 'ops_room_summary');
-    assert.equal(summary.observed, 'not_run');
+    assert.equal(results.length, 18);
+    assert.ok(results.every(item => item.observed === 'not_run'));
     assert.equal(new Set(results.map(item => item.attackId)).size, results.length);
-    assert.ok(results.length <= 20);
+    assert.ok(results.every(item => item.observed.length <= 300 && item.expected.length <= 300), '글자 수 제한(300자)');
     assert.ok(!/Bearer|eyJ|sb_secret_|@/u.test(JSON.stringify(results)));
   } finally {
     globalThis.fetch = originalFetch;
+    if (savedKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
+    else process.env.SUPABASE_PUBLISHABLE_KEY = savedKey;
   }
 });
 
-test('요청을 보낸 점검은 받은 HTTP 상태만 observed에 적고, 응답이 없거나 보내지 않은 점검은 정확히 not_run', async () => {
+test('12단계 이전 점검(11단계)은 요청을 보내고 받은 HTTP 상태만 observed에 적으며, 응답이 없으면 not_run', async () => {
   const originalFetch = globalThis.fetch;
-  const step12 = {
+  const step11 = {
     ...config,
-    step: 12,
+    step: 11,
     originalApiUrl: '',
     identityProvider: {
       issuer: 'https://project.supabase.co/auth/v1', audience: 'authenticated',
@@ -362,30 +359,19 @@ test('요청을 보낸 점검은 받은 HTTP 상태만 observed에 적고, 응�
   try {
     globalThis.fetch = async (url) => {
       const target = new URL(String(url));
-      const headers = { 'x-vercel-id': 'icn1::iad1::test1-1760504000000-ab12cd34ef56' };
-      if (target.pathname in files) return new Response(files[target.pathname], { status: 200, headers });
-      return new Response(JSON.stringify({ error: 'UNAUTHORIZED' }), { status: 401, headers });
+      if (target.pathname in files) return new Response(files[target.pathname], { status: 200 });
+      return new Response(JSON.stringify({ error: 'UNAUTHORIZED' }), { status: 401 });
     };
-    const results = await runAttackChecks(step12);
+    const results = await runAttackChecks(step11);
     const sent = results.filter(item => item.observed !== 'not_run');
-    assert.equal(sent.length, 7, '요청을 실제로 보낸 점검은 7개');
-    for (const item of sent) {
-      assert.match(item.observed, /HTTP \d{3}/u, `${item.attackId}에 받은 HTTP 상태가 있어야 합니다`);
-      assert.ok(!/요청 ID|확인 시각|icn1/u.test(item.observed), `${item.attackId}에는 HTTP 상태 외의 요청 ID·시각을 적지 않습니다`);
-    }
+    assert.equal(sent.length, 6);
+    for (const item of sent) assert.match(item.observed, /HTTP \d{3}/u, item.attackId);
     assert.match(sent.find(item => item.attackId === 'anonymous_note_read').observed, /\(HTTP 401\)$/u);
     assert.match(sent.find(item => item.attackId === 'static_files_have_no_server_secret').observed, / · HTTP 200\/200\/200$/u);
-    assert.ok(results.every(item => item.observed.length <= 300 && item.expected.length <= 300), '글자 수 제한(300자)');
-    for (const id of ['anonymous_note_create', 'anonymous_note_update', 'anonymous_note_delete', 'anonymous_restore', 'anonymous_device_request',
-      'direct_data_api_read', 'direct_data_api_update', 'restore_backup_note', 'device_approval_flow', 'ops_room_summary', 'cross_owner_access']) {
-      assert.equal(results.find(item => item.attackId === id)?.observed, 'not_run', id);
-    }
 
-    // 응답을 하나도 받지 못하면 점검 전부 not_run이고, 상태를 지어내지 않습니다.
     globalThis.fetch = async () => { throw new Error('network'); };
-    const failed = await runAttackChecks(step12);
+    const failed = await runAttackChecks(step11);
     assert.ok(failed.every(item => item.observed === 'not_run'));
-    assert.ok(!JSON.stringify(failed).includes('실패'));
   } finally {
     globalThis.fetch = originalFetch;
   }

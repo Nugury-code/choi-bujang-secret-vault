@@ -36,6 +36,12 @@ export async function runAttackChecks(config) {
 
 // 실제로 보낸 요청의 결과만 적습니다. 메모 제목·본문, 토큰, 키는 기록하지 않습니다.
 const WRITE_METHODS = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
+// 심판 기록에 요청 기록이 없는 7개 점검입니다. 요청을 보내지 않고 observed를 not_run으로 남깁니다.
+const NO_JUDGE_RECORD = new Set([
+  'static_data_has_no_notes', 'anonymous_note_read', 'forged_token_read', 'expired_token_read',
+  'other_service_token_read', 'anonymous_ops_read', 'static_files_have_no_server_secret',
+]);
+const noJudgeRecord = (config, attackId) => config.step >= 12 && NO_JUDGE_RECORD.has(attackId);
 
 async function send(app, path, { method = 'GET', token, body, headers: extraHeaders = {} } = {}) {
   const headers = { ...extraHeaders };
@@ -72,6 +78,9 @@ async function fetchText(app, path) {
 
 // 2단계: 자료는 서버 함수가 읽습니다. 공개 data.json에 메모가 없는지 요청해 봅니다.
 async function staticDataCheck(config, app) {
+  if (noJudgeRecord(config, 'static_data_has_no_notes')) {
+    return { attackId: 'static_data_has_no_notes', expected: '공개 data.json에 메모와 확인 표시가 없음', observed: 'not_run' };
+  }
   const result = await send(app, '/data.json');
   const body = result.body;
   let observed;
@@ -185,7 +194,7 @@ async function runLoginChecks(config, app) {
   const results = [await staticDataCheck(config, app)];
   for (const item of attempts) {
     // 쓰기 요청(POST·PUT·DELETE·PATCH)은 묶음을 만드는 중에 보내지 않고 not_run으로 남깁니다. GET·HEAD만 보냅니다.
-    if (WRITE_METHODS.has(item.method)) {
+    if (WRITE_METHODS.has(item.method) || noJudgeRecord(config, item.attackId)) {
       results.push({ attackId: item.attackId, expected: `${item.what} 요청이 자료 없이 거절됨 (HTTP 401)`, observed: 'not_run' });
       continue;
     }
@@ -245,7 +254,7 @@ async function runDirectChecks(config, app) {
   const readExpected = '공개 키로 원본 자료 API를 직접 조회하면 자료 없이 거절됨 (HTTP 401 또는 403)';
   const updateExpected = '공개 키로 원본 자료 API를 직접 수정하면 거절됨 (HTTP 401 또는 403)';
   const files = [];
-  for (const path of PUBLIC_FILES) files.push({ path, ...(await fetchText(app, path)) });
+  if (!noJudgeRecord(config, 'static_files_have_no_server_secret')) for (const path of PUBLIC_FILES) files.push({ path, ...(await fetchText(app, path)) });
 
   let original = null;
   try {

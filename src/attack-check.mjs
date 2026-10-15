@@ -35,6 +35,8 @@ export async function runAttackChecks(config) {
 }
 
 // 실제로 보낸 요청의 결과만 적습니다. 메모 제목·본문, 토큰, 키는 기록하지 않습니다.
+const WRITE_METHODS = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
+
 async function send(app, path, { method = 'GET', token, body, headers: extraHeaders = {} } = {}) {
   const headers = { ...extraHeaders };
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -180,6 +182,11 @@ async function runLoginChecks(config, app) {
   }
   const results = [await staticDataCheck(config, app)];
   for (const item of attempts) {
+    // 쓰기 요청(POST·PUT·DELETE·PATCH)은 묶음을 만드는 중에 보내지 않고 not_run으로 남깁니다. GET·HEAD만 보냅니다.
+    if (WRITE_METHODS.has(item.method)) {
+      results.push({ attackId: item.attackId, expected: `${item.what} 요청이 자료 없이 거절됨 (HTTP 401)`, observed: 'not_run' });
+      continue;
+    }
     const response = await send(app, item.path, item);
     results.push({
       attackId: item.attackId,
@@ -252,7 +259,7 @@ async function runDirectChecks(config, app) {
   if (!original || !key) {
     const why = !original ? 'aleph.config.json의 originalApiUrl이 없어' : '공개 키가 없어(화면 파일에도 없고 환경변수 SUPABASE_PUBLISHABLE_KEY도 주지 않음)';
     results.push({ attackId: 'direct_data_api_read', expected: readExpected, observed: `미실행: ${why} 보내지 않음` });
-    results.push({ attackId: 'direct_data_api_update', expected: updateExpected, observed: `미실행: ${why} 보내지 않음` });
+    results.push({ attackId: 'direct_data_api_update', expected: updateExpected, observed: 'not_run' });
   } else {
     const headers = { apikey: key };
     const read = await send(original, original.href, { headers });
@@ -263,15 +270,8 @@ async function runDirectChecks(config, app) {
     else readObserved = `공개 키로 원본 자료 API를 직접 조회한 응답이 401·403이 아님 (HTTP ${read.status}). 거절 방식을 확인해야 함`;
     results.push({ attackId: 'direct_data_api_read', expected: readExpected, observed: readObserved });
 
-    const update = await send(original, `${original.href}?note_id=eq.${randomUUID()}`, {
-      method: 'PATCH', headers: { ...headers, Prefer: 'return=minimal' }, body: { title: '점검' },
-    });
-    let updateObserved;
-    if (update.status === null) updateObserved = '요청이 실패해 확인하지 못함';
-    else if (update.status === 401 || update.status === 403) updateObserved = `공개 키로 원본 자료 API를 직접 수정하면 거절됨 (HTTP ${update.status}). 일치하는 행이 없는 조건으로만 보냄`;
-    else if (update.status >= 200 && update.status < 300) updateObserved = `공개 키로 원본 자료 API를 직접 수정하는 요청이 막히지 않고 성공함 (HTTP ${update.status}). 막지 못한 약점(일치하는 행이 없어 바뀐 자료는 없음)`;
-    else updateObserved = `공개 키로 원본 자료 API를 직접 수정한 응답이 401·403이 아님 (HTTP ${update.status}). 거절 방식을 확인해야 함`;
-    results.push({ attackId: 'direct_data_api_update', expected: updateExpected, observed: updateObserved });
+    // 공개 키로 원본 자료를 수정하는 요청(PATCH)은 쓰기 요청이라 보내지 않고 not_run으로 남깁니다.
+    results.push({ attackId: 'direct_data_api_update', expected: updateExpected, observed: 'not_run' });
   }
 
   const readable = files.filter((file) => file.status !== null && file.text !== '');

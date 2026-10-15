@@ -147,9 +147,10 @@ test('step 3 attack check sends only requests that need no login and records sta
     assert.deepEqual(results.map(item => Object.keys(item).sort()).filter(keys => keys.join() !== 'attackId,expected,observed'), []);
     assert.deepEqual(results.map(item => item.attackId), ['static_data_has_no_notes', 'anonymous_note_read', 'anonymous_note_create',
       'anonymous_note_update', 'anonymous_note_delete', 'forged_token_read', 'expired_token_read', 'other_service_token_read']);
-    for (const item of results.slice(1)) assert.match(item.observed, /자료 없이 거절됨 \(HTTP 401\)/u);
-    assert.deepEqual(calls.map(call => call.method), ['GET', 'GET', 'POST', 'PUT', 'DELETE', 'GET', 'GET', 'GET']);
-    assert.deepEqual(calls.map(call => Boolean(call.auth)), [false, false, false, false, false, true, true, true]);
+    for (const index of [1, 5, 6, 7]) assert.match(results[index].observed, /자료 없이 거절됨 \(HTTP 401\)/u);
+    for (const index of [2, 3, 4]) assert.equal(results[index].observed, 'not_run', '쓰기 요청 점검은 보내지 않고 not_run');
+    assert.deepEqual(calls.map(call => call.method), ['GET', 'GET', 'GET', 'GET', 'GET'], '쓰기 요청은 보내지 않습니다');
+    assert.deepEqual(calls.map(call => Boolean(call.auth)), [false, false, true, true, true]);
     assert.ok(calls.slice(1).every(call => call.url.startsWith('https://student-defense.vercel.app/api/notes')));
     const text = JSON.stringify(results);
     assert.ok(!/Bearer|eyJ|sb_secret_|@/u.test(text));
@@ -165,7 +166,7 @@ test('step 3 attack check sends only requests that need no login and records sta
 
     globalThis.fetch = async () => { throw new Error('network'); };
     const failed = await runAttackChecks(step3);
-    assert.match(failed[2].observed, /확인하지 못함/u);
+    assert.match(failed[1].observed, /확인하지 못함/u);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -190,12 +191,14 @@ test('step 4 attack check keeps the login-free requests and records the A/B owne
     };
     const results = await runAttackChecks(step4);
     assert.equal(results.length, 9);
-    assert.equal(calls.length, 8, '미실행 항목은 요청을 보내지 않습니다');
+    assert.equal(calls.length, 5, '미실행 항목과 쓰기 요청 점검은 요청을 보내지 않습니다');
+    assert.ok(calls.every(call => call.method === 'GET'));
     assert.deepEqual(results.map(item => Object.keys(item).sort()).filter(keys => keys.join() !== 'attackId,expected,observed'), []);
     assert.deepEqual(results.map(item => item.attackId), ['static_data_has_no_notes', 'anonymous_note_read', 'anonymous_note_create',
       'anonymous_note_update', 'anonymous_note_delete', 'forged_token_read', 'expired_token_read', 'other_service_token_read',
       'cross_owner_access']);
-    for (const item of results.slice(1, 8)) assert.match(item.observed, /자료 없이 거절됨 \(HTTP 401\)/u);
+    for (const index of [1, 5, 6, 7]) assert.match(results[index].observed, /자료 없이 거절됨 \(HTTP 401\)/u);
+    for (const index of [2, 3, 4]) assert.equal(results[index].observed, 'not_run');
     assert.match(results[8].observed, /^미실행/u);
     assert.ok(results.every(item => item.expected.length <= 300 && item.observed.length <= 300));
     const text = JSON.stringify(results);
@@ -252,21 +255,20 @@ test('step 5 attack check calls the original data API with the given public key,
     assert.deepEqual(results.map(item => Object.keys(item).sort()).filter(keys => keys.join() !== 'attackId,expected,observed'), []);
     assert.ok(results.every(item => item.expected.length <= 300 && item.observed.length <= 300));
     assert.match(results[8].observed, /자료 없이 거절됨 \(HTTP 401\)/u);
-    assert.match(results[9].observed, /수정하면 거절됨 \(HTTP 401\)/u);
+    assert.equal(results[9].observed, 'not_run', '공개 키 직접 수정(PATCH)은 보내지 않고 not_run');
     assert.match(results[10].observed, /3개\(.*\)에서 서버 전용 키 모양·Supabase 공개 키 모양·로그인 토큰 모양·가상 메모 확인 표시가 보이지 않음/u);
     assert.match(results[11].observed, /^미실행/u);
     const direct = calls.filter(call => call.href.startsWith(ORIGINAL));
-    assert.deepEqual(direct.map(call => call.method), ['GET', 'PATCH']);
+    assert.deepEqual(direct.map(call => call.method), ['GET']);
     assert.ok(direct.every(call => call.apikey === PUBLIC_KEY && !call.auth), '공개 키만 쓰고 로그인 토큰은 쓰지 않습니다');
     assert.equal(new URL(direct[0].href).search, '');
-    assert.match(new URL(direct[1].href).search, /^\?note_id=eq\.[0-9a-f-]{36}$/u);
     const text = JSON.stringify(results);
     assert.ok(!text.includes(PUBLIC_KEY) && !text.includes('a1B2c3D4') && !/Bearer|eyJ|sb_secret_[A-Za-z0-9]|@/u.test(text));
 
     install({ direct: () => new Response(JSON.stringify([{ id: 'x', title: 'SECRET_TITLE' }]), { status: 200 }) });
     const open = await runAttackChecks(step5);
     assert.match(open[8].observed, /막히지 않고 성공함 \(HTTP 200\). 막지 못한 약점/u);
-    assert.match(open[9].observed, /막히지 않고 성공함 \(HTTP 200\)/u);
+    assert.equal(open[9].observed, 'not_run');
     assert.ok(!JSON.stringify(open).includes('SECRET_TITLE'));
 
     install({ pages: { ...files, '/app.js': `${files['/app.js']} const S = '${SERVER_KEY}';`, '/data.json': '{"sampleMarker":"SAMPLE_NOTE_1","notes":[]}' } });
@@ -292,7 +294,8 @@ test('step 5 attack check calls the original data API with the given public key,
     process.env.SUPABASE_PUBLISHABLE_KEY = PUBLIC_KEY;
     install();
     const noUrl = await runAttackChecks({ ...step5, originalApiUrl: null });
-    assert.match(noUrl[9].observed, /^미실행: aleph\.config\.json의 originalApiUrl이 없어/u);
+    assert.match(noUrl[8].observed, /^미실행: aleph\.config\.json의 originalApiUrl이 없어/u);
+    assert.equal(noUrl[9].observed, 'not_run');
 
     globalThis.fetch = async () => { throw new Error('network'); };
     const failed = await runAttackChecks(step5);
@@ -326,6 +329,14 @@ test('step 12 attack check adds the login-free ops read and records the logged-i
     const ops = results.find(item => item.attackId === 'anonymous_ops_read');
     assert.match(ops.observed, /자료 없이 거절됨 \(HTTP 401\)/u);
     assert.ok(calls.some(call => call.url.endsWith('/api/ops') && call.method === 'GET' && !call.auth));
+    assert.ok(calls.every(call => ['GET', 'HEAD'].includes(call.method)), '묶음을 만드는 중 쓰기 요청(POST·PUT·DELETE·PATCH)은 보내지 않습니다');
+    for (const id of ['anonymous_note_create', 'anonymous_note_update', 'anonymous_note_delete', 'anonymous_restore', 'anonymous_device_request', 'direct_data_api_update']) {
+      const entry = results.find(item => item.attackId === id);
+      if (entry) assert.equal(entry.observed, 'not_run', id);
+    }
+    for (const id of ['anonymous_note_create', 'anonymous_note_update', 'anonymous_note_delete', 'anonymous_restore', 'anonymous_device_request']) {
+      assert.ok(results.some(item => item.attackId === id), `${id} 항목은 not_run으로 남아 있어야 합니다`);
+    }
     const summary = results.find(item => item.attackId === 'ops_room_summary');
     assert.match(summary.observed, /^미실행/u);
     assert.equal(new Set(results.map(item => item.attackId)).size, results.length);

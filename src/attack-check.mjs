@@ -108,14 +108,37 @@ async function runStep2Checks(config, app) {
 // 로그인 정보 없이 만든 가짜 토큰입니다. 모양만 JWT이고 서명은 아무 값이라 서버가 서명을 확인하면 거절해야 합니다.
 // 값은 요청에만 쓰고 저장·출력하지 않습니다.
 function fakeToken(config, { audience, expiresInSeconds }) {
-  const part = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  // Buffer는 Node 전용이라 쓰지 않습니다. 글자를 UTF-8 바이트로 바꾼 뒤 base64url(패딩 없음)로 직접 만듭니다.
+  const table = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  const encode = (bytes) => {
+    let out = '';
+    for (let i = 0; i < bytes.length; i += 3) {
+      const n = (bytes[i] << 16) | ((bytes[i + 1] ?? 0) << 8) | (bytes[i + 2] ?? 0);
+      out += table[(n >> 18) & 63] + table[(n >> 12) & 63];
+      if (i + 1 < bytes.length) out += table[(n >> 6) & 63];
+      if (i + 2 < bytes.length) out += table[n & 63];
+    }
+    return out;
+  };
+  const utf8 = (text) => {
+    const bytes = [];
+    for (const ch of text) {
+      const c = ch.codePointAt(0);
+      if (c < 0x80) bytes.push(c);
+      else if (c < 0x800) bytes.push(0xc0 | (c >> 6), 0x80 | (c & 63));
+      else if (c < 0x10000) bytes.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+      else bytes.push(0xf0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+    }
+    return bytes;
+  };
+  const part = (value) => encode(utf8(JSON.stringify(value)));
   const now = Math.floor(Date.now() / 1000);
   const header = part({ alg: 'ES256', typ: 'JWT' });
   const payload = part({
     iss: config.identityProvider?.issuer, aud: audience, role: 'authenticated', sub: randomUUID(),
     iat: now - 60, exp: now + expiresInSeconds,
   });
-  return `${header}.${payload}.${Buffer.alloc(64, 7).toString('base64url')}`;
+  return `${header}.${payload}.${encode(new Array(64).fill(7))}`;
 }
 
 // 3~5단계: 로그인 정보 없이 보낼 수 있는 요청이 모두 자료 없이 거절되는지 배포 주소로 실제로 보냅니다.

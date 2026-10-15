@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 // The student changes this check as each stage adds an attack to the same app.
 // Never return tokens, private keys, real names, or note bodies.
 export async function runAttackChecks(config) {
-  if (![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].includes(config.step)) throw new Error('이 단계의 공격 점검을 src/attack-check.mjs에 구현해 주세요.');
+  if (![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].includes(config.step)) throw new Error('이 단계의 공격 점검을 src/attack-check.mjs에 구현해 주세요.');
   let app;
   try {
     app = new URL(config.publicAppUrl);
@@ -151,6 +151,10 @@ async function runLoginChecks(config, app) {
   if (config.step >= 11) {
     attempts.push({ attackId: 'anonymous_device_request', what: '로그인 없이 기기 승인 요청', path: '/api/device', method: 'POST', body: {} });
   }
+  // 12단계: 탈환 작전실 요약 경로(GET /api/ops)도 로그인 없이는 자료 없이 거절돼야 합니다.
+  if (config.step >= 12) {
+    attempts.push({ attackId: 'anonymous_ops_read', what: '로그인 없이 작전실 요약 읽기', path: '/api/ops' });
+  }
   const results = [await staticDataCheck(config, app)];
   for (const item of attempts) {
     const response = await send(app, item.path, item);
@@ -175,6 +179,14 @@ async function runLoginChecks(config, app) {
       attackId: 'device_approval_flow',
       expected: '승인 전에는 자료가 화면에 없고, 서버가 등록 기기로 확인한(approved) 뒤에만 기존 화면이 열림',
       observed: '미실행: 서명된 로그인 토큰과 주인의 승인이 필요해 이 점검에서는 보내지 않음',
+    });
+  }
+  if (config.step >= 12) {
+    // 로그인한 사용자의 작전실 요약(확인됨/미실행 구분, 메모 본문 없음)은 서명된 로그인 토큰이 필요해 보내지 않습니다.
+    results.push({
+      attackId: 'ops_room_summary',
+      expected: '로그인한 사용자 본인의 요약만 나오고 확인됨과 미실행이 구분되며 메모 본문이 없음',
+      observed: '미실행: 서명된 로그인 토큰이 필요해 이 점검에서는 보내지 않음',
     });
   }
   if (config.step >= 4) {

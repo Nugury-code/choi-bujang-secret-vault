@@ -303,3 +303,35 @@ test('step 5 attack check calls the original data API with the given public key,
     else process.env.SUPABASE_PUBLISHABLE_KEY = originalEnv;
   }
 });
+
+test('step 12 attack check adds the login-free ops read and records the logged-in summary as not run, without tokens', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  const step12 = {
+    ...config,
+    step: 12,
+    originalApiUrl: '',
+    identityProvider: {
+      issuer: 'https://project.supabase.co/auth/v1', audience: 'authenticated',
+      jwksUrl: 'https://project.supabase.co/auth/v1/.well-known/jwks.json',
+    },
+  };
+  try {
+    globalThis.fetch = async (url, init = {}) => {
+      calls.push({ url: String(url), method: init.method ?? 'GET', auth: init.headers?.Authorization ?? null });
+      if (String(url).endsWith('/data.json')) return new Response(JSON.stringify({ notes: [] }), { status: 200 });
+      return new Response(JSON.stringify({ error: 'UNAUTHORIZED' }), { status: 401 });
+    };
+    const results = await runAttackChecks(step12);
+    const ops = results.find(item => item.attackId === 'anonymous_ops_read');
+    assert.match(ops.observed, /자료 없이 거절됨 \(HTTP 401\)/u);
+    assert.ok(calls.some(call => call.url.endsWith('/api/ops') && call.method === 'GET' && !call.auth));
+    const summary = results.find(item => item.attackId === 'ops_room_summary');
+    assert.match(summary.observed, /^미실행/u);
+    assert.equal(new Set(results.map(item => item.attackId)).size, results.length);
+    assert.ok(results.length <= 20);
+    assert.ok(!/Bearer|eyJ|sb_secret_|@/u.test(JSON.stringify(results)));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

@@ -295,6 +295,74 @@ function renderNotes(notes) {
   }));
 }
 
+// 탈환 작전실(12단계). 서버 GET /api/ops의 요약을 보여 줍니다. 기기 승인이 확인된 뒤에만 부릅니다.
+// 서버가 준 status가 observed면 "확인됨", not_run이면 "미실행"으로 표시하고, 서버가 주지 않은 값은 채우지 않습니다.
+const opsRoom = $('ops-room');
+const opsStatus = $('ops-status');
+const opsList = $('ops-list');
+let opsId = 0;
+const OPS_STATE = { observed: '확인됨', not_run: '미실행' };
+
+function hideOps() {
+  opsId += 1;
+  opsRoom.hidden = true;
+  opsList.replaceChildren();
+}
+
+function opsItem(title, part, lines = []) {
+  const item = document.createElement('li');
+  const head = document.createElement('strong');
+  head.textContent = title;
+  item.append(head);
+  const stateOf = (value) => OPS_STATE[value?.status] ?? '표시할 수 없음';
+  for (const [label, value, text] of lines.length ? lines : [[null, part, null]]) {
+    const span = document.createElement('span');
+    span.textContent = `${label ? `${label}: ` : ''}${stateOf(value)}${value?.status === 'observed' && text ? ` · ${text}` : ''}\n`;
+    item.append(span);
+  }
+  return item;
+}
+
+function renderOps(data) {
+  const { rules, detection, revocation, recovery } = data ?? {};
+  const snap = recovery?.policySnapshot;
+  const audit = recovery?.audit;
+  const items = [
+    opsItem('판정기 규칙', rules, [[null, rules, Array.isArray(rules?.ruleIds) ? `${rules.ruleIds.length}개: ${rules.ruleIds.join(', ')}` : null]]),
+    opsItem('탐지 사건', detection),
+    opsItem('회수 상태', revocation),
+    opsItem('복구 버전', null, [
+      ['정책 사본', snap, `단계 ${snap?.step}, 지문 ${snap?.digest}`],
+      ['복원 기록', audit, Array.isArray(audit?.recent)
+        ? `최근 ${audit.total}건 (${Object.entries(audit.byOutcome ?? {}).map(([name, count]) => `${name} ${count}`).join(', ') || '없음'})` : null],
+    ]),
+  ];
+  if (audit?.status === 'observed' && Array.isArray(audit.recent)) {
+    for (const row of audit.recent) {
+      const line = document.createElement('li');
+      line.textContent = `${row.at} · 메모 ${row.noteId ?? '-'} · ${row.outcome} · ${row.status}`;
+      items.push(line);
+    }
+  }
+  opsList.replaceChildren(...items);
+}
+
+async function loadOps() {
+  const myId = ++opsId;
+  opsRoom.hidden = false;
+  opsList.replaceChildren();
+  opsStatus.textContent = '불러오는 중입니다.';
+  try {
+    const data = await callApi('/api/ops', 'GET');
+    if (myId !== opsId) return;
+    opsStatus.textContent = '';
+    renderOps(data);
+  } catch {
+    if (myId !== opsId) return;
+    opsStatus.textContent = '요약을 불러오지 못했습니다.';
+  }
+}
+
 async function fetchList() {
   const myId = ++loadId;
   try {
@@ -317,6 +385,7 @@ async function fetchList() {
 async function loadNotes(userId) {
   // 기기 승인 전에는 자료를 부르지도 보여 주지도 않습니다. 서버가 'approved'라고 답한 뒤에만 불러옵니다.
   if (userId && deviceStatus !== 'approved') {
+    hideOps();
     loadedFor = undefined;
     loadId += 1;
     editor.hidden = true;
@@ -329,11 +398,13 @@ async function loadNotes(userId) {
   editor.hidden = !userId;
   showNoteError('');
   if (!userId) {
+    hideOps();
     loadId += 1;
     showNotesMessage('로그인하면 자료가 보입니다.');
     return;
   }
   showNotesMessage('가상 자료를 불러오는 중입니다.');
+  loadOps();
   await fetchList().catch(() => {});
 }
 

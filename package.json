@@ -17,6 +17,9 @@
     "test:limit": "node --test test/rate-limit.test.mjs",
     "test:restore": "node --test test/restore-api.test.mjs",
     "test:device": "node --test test/device-api.test.mjs",
+    "test:ops": "node --test test/ops-api.test.mjs",
+    "evidence": "node scripts/evidence-table.mjs",
+    "test:evidence": "node --test test/evidence.test.mjs",
     "policy:diff": "node scripts/policy-diff.mjs",
     "policy:restore": "node scripts/policy-restore.mjs",
     "test:policy": "node --test test/policy-diff.test.mjs test/policy-restore.test.mjs test/policy-recheck.test.mjs"

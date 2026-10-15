@@ -296,12 +296,12 @@ function renderNotes(notes) {
 }
 
 // 탈환 작전실(12단계). 서버 GET /api/ops의 요약을 보여 줍니다. 기기 승인이 확인된 뒤에만 부릅니다.
-// 서버가 준 status가 observed면 "확인됨", not_run이면 "미실행"으로 표시하고, 서버가 주지 않은 값은 채우지 않습니다.
+// 서버가 준 status가 observed면 "읽음"(이번 요청에서 서버가 읽었다는 뜻이며 통과·성공이 아님), not_run이면 "미실행"으로 표시하고, 서버가 주지 않은 값은 채우지 않습니다.
 const opsRoom = $('ops-room');
 const opsStatus = $('ops-status');
 const opsList = $('ops-list');
 let opsId = 0;
-const OPS_STATE = { observed: '확인됨', not_run: '미실행' };
+const OPS_STATE = { observed: '읽음', not_run: '미실행' };
 
 function hideOps() {
   opsId += 1;
@@ -328,13 +328,13 @@ function renderOps(data) {
   const snap = recovery?.policySnapshot;
   const audit = recovery?.audit;
   const items = [
-    opsItem('판정기 규칙', rules, [[null, rules, Array.isArray(rules?.ruleIds) ? `${rules.ruleIds.length}개: ${rules.ruleIds.join(', ')}` : null]]),
+    opsItem('판정기 규칙', rules, [[null, rules, Array.isArray(rules?.ruleIds) ? `규칙 이름 ${rules.ruleIds.length}개(판정 실행 결과 아님): ${rules.ruleIds.join(', ')}` : null]]),
     opsItem('탐지 사건', detection),
     opsItem('회수 상태', revocation),
     opsItem('복구 버전', null, [
-      ['정책 사본', snap, `단계 ${snap?.step}, 지문 ${snap?.digest}`],
+      ['정책 사본', snap, `단계 ${snap?.step}, 지문 ${snap?.digest} (사본 파일 검증, 통과 판정 아님)`],
       ['복원 기록', audit, Array.isArray(audit?.recent)
-        ? `${audit.total}건 (${Object.entries(audit.byOutcome ?? {}).map(([name, count]) => `${name} ${count}`).join(', ') || '없음'})` : null],
+        ? `${audit.total}건 (${Object.entries(audit.byOutcome ?? {}).map(([name, count]) => `${name} ${count}`).join(', ') || '없음'}) · 기록을 읽은 것이며 복구 성공을 뜻하지 않음` : null],
     ]),
   ];
   if (audit?.status === 'observed' && Array.isArray(audit.recent)) {

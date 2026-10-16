@@ -9,6 +9,7 @@ public/vendor/
 xdr/deny-rules.json
 xdr/web-injection/deny-rules.json
 xdr/known-cve/deny-rules.json
+xdr/persistence/deny-rules.json
 policy/test-policy.json
 policy/test-policy.json.tmp
 policy/restore-audit.log

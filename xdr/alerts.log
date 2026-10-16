@@ -34,3 +34,19 @@
 2026-10-08T00:12:25.680Z action=alert alert=wi-15 srcip=192.0.2.42 confidence=0.55 rule=none reason=근거 패턴 없음
 2026-10-08T00:12:25.680Z action=alert alert=wi-16 srcip=198.51.100.42 confidence=0.6 rule=none reason=근거 패턴 없음
 2026-10-08T00:12:25.680Z action=alert alert=wi-17 srcip=203.0.113.43 confidence=0.55 rule=none reason=근거 패턴 없음
+2026-10-16T01:11:33.752Z action=block alert=ps-01 srcip=203.0.113.12 confidence=0.91 expires=2026-10-16T01:41:33.752Z reason=서명 없는 새 서비스 등록
+2026-10-16T01:11:33.752Z action=block alert=ps-02 srcip=203.0.113.12 confidence=0.96 expires=2026-10-16T01:41:33.752Z reason=낯선 예약 작업
+2026-10-16T01:11:33.752Z action=block alert=ps-03 srcip=198.51.100.12 confidence=0.88 expires=2026-10-16T01:41:33.752Z reason=시작 폴더 변경
+2026-10-16T01:11:33.752Z action=block alert=ps-04 srcip=192.0.2.12 confidence=0.87 expires=2026-10-16T01:41:33.752Z reason=서명 없는 새 서비스 등록
+2026-10-16T01:11:33.752Z action=block alert=ps-05 srcip=203.0.113.19 confidence=0.89 expires=2026-10-16T01:41:33.752Z reason=낯선 예약 작업
+2026-10-16T01:11:33.752Z action=block alert=ps-06 srcip=198.51.100.19 confidence=0.91 expires=2026-10-16T01:41:33.752Z reason=서명 없는 새 서비스 등록
+2026-10-16T01:11:33.752Z action=block alert=ps-07 srcip=192.0.2.19 confidence=0.95 expires=2026-10-16T01:41:33.752Z reason=시작 폴더 변경 + 낯선 예약 작업
+2026-10-16T01:11:33.752Z action=block alert=ps-08 srcip=203.0.113.33 confidence=0.89 expires=2026-10-16T01:41:33.752Z reason=서명 없는 새 서비스 등록
+2026-10-16T01:11:33.752Z action=alert alert=ps-09 srcip=192.0.2.48 confidence=0.6 rule=none reason=낯선 예약 작업과 일부만 닮음
+2026-10-16T01:11:33.752Z action=alert alert=ps-10 srcip=198.51.100.48 confidence=0.62 rule=none reason=시작 폴더 변경과 일부만 닮음
+2026-10-16T01:11:33.752Z action=alert alert=ps-11 srcip=203.0.113.48 confidence=0.54 rule=none reason=서명 없는 새 서비스 등록과 일부만 닮음
+2026-10-16T01:11:33.752Z action=alert alert=ps-12 srcip=192.0.2.49 confidence=0.56 rule=none reason=낯선 예약 작업과 일부만 닮음
+2026-10-16T01:11:33.752Z action=alert alert=ps-13 srcip=198.51.100.49 confidence=0.64 rule=none reason=서명 없는 새 서비스 등록과 일부만 닮음
+2026-10-16T01:11:33.752Z action=alert alert=ps-14 srcip=203.0.113.49 confidence=0.56 rule=none reason=시작 폴더 변경과 일부만 닮음
+2026-10-16T01:11:33.752Z action=alert alert=ps-15 srcip=192.0.2.53 confidence=0.58 rule=none reason=낯선 예약 작업과 일부만 닮음
+2026-10-16T01:11:33.752Z action=alert alert=ps-16 srcip=198.51.100.53 confidence=0.54 rule=none reason=서명 없는 새 서비스 등록과 일부만 닮음

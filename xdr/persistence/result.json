@@ -1,0 +1,155 @@
+{
+  "schema": "aleph.xdr.result.v1",
+  "moduleKey": "persistence",
+  "decisions": [
+    {
+      "alertId": "ps-01",
+      "action": "block",
+      "confidence": 0.91,
+      "reason": "서명 없는 새 서비스 등록"
+    },
+    {
+      "alertId": "ps-02",
+      "action": "block",
+      "confidence": 0.96,
+      "reason": "낯선 예약 작업"
+    },
+    {
+      "alertId": "ps-03",
+      "action": "block",
+      "confidence": 0.88,
+      "reason": "시작 폴더 변경"
+    },
+    {
+      "alertId": "ps-04",
+      "action": "block",
+      "confidence": 0.87,
+      "reason": "서명 없는 새 서비스 등록"
+    },
+    {
+      "alertId": "ps-05",
+      "action": "block",
+      "confidence": 0.89,
+      "reason": "낯선 예약 작업"
+    },
+    {
+      "alertId": "ps-06",
+      "action": "block",
+      "confidence": 0.91,
+      "reason": "서명 없는 새 서비스 등록"
+    },
+    {
+      "alertId": "ps-07",
+      "action": "block",
+      "confidence": 0.95,
+      "reason": "시작 폴더 변경 + 낯선 예약 작업"
+    },
+    {
+      "alertId": "ps-08",
+      "action": "block",
+      "confidence": 0.89,
+      "reason": "서명 없는 새 서비스 등록"
+    },
+    {
+      "alertId": "ps-09",
+      "action": "alert",
+      "confidence": 0.6,
+      "reason": "낯선 예약 작업과 일부만 닮음"
+    },
+    {
+      "alertId": "ps-10",
+      "action": "alert",
+      "confidence": 0.62,
+      "reason": "시작 폴더 변경과 일부만 닮음"
+    },
+    {
+      "alertId": "ps-11",
+      "action": "alert",
+      "confidence": 0.54,
+      "reason": "서명 없는 새 서비스 등록과 일부만 닮음"
+    },
+    {
+      "alertId": "ps-12",
+      "action": "alert",
+      "confidence": 0.56,
+      "reason": "낯선 예약 작업과 일부만 닮음"
+    },
+    {
+      "alertId": "ps-13",
+      "action": "alert",
+      "confidence": 0.64,
+      "reason": "서명 없는 새 서비스 등록과 일부만 닮음"
+    },
+    {
+      "alertId": "ps-14",
+      "action": "alert",
+      "confidence": 0.56,
+      "reason": "시작 폴더 변경과 일부만 닮음"
+    },
+    {
+      "alertId": "ps-15",
+      "action": "alert",
+      "confidence": 0.58,
+      "reason": "낯선 예약 작업과 일부만 닮음"
+    },
+    {
+      "alertId": "ps-16",
+      "action": "alert",
+      "confidence": 0.54,
+      "reason": "서명 없는 새 서비스 등록과 일부만 닮음"
+    },
+    {
+      "alertId": "ps-17",
+      "action": "record",
+      "confidence": 0.05,
+      "reason": "맞는 패턴 없음"
+    },
+    {
+      "alertId": "ps-18",
+      "action": "record",
+      "confidence": 0.3,
+      "reason": "징후는 있으나 규칙 수준이 낮아 패턴과 맞지 않음"
+    },
+    {
+      "alertId": "ps-19",
+      "action": "record",
+      "confidence": 0.3,
+      "reason": "징후는 있으나 규칙 수준이 낮아 패턴과 맞지 않음"
+    },
+    {
+      "alertId": "ps-20",
+      "action": "record",
+      "confidence": 0.3,
+      "reason": "징후는 있으나 규칙 수준이 낮아 패턴과 맞지 않음"
+    },
+    {
+      "alertId": "ps-21",
+      "action": "record",
+      "confidence": 0.05,
+      "reason": "맞는 패턴 없음"
+    },
+    {
+      "alertId": "ps-22",
+      "action": "record",
+      "confidence": 0.05,
+      "reason": "맞는 패턴 없음"
+    },
+    {
+      "alertId": "ps-23",
+      "action": "record",
+      "confidence": 0.3,
+      "reason": "징후는 있으나 규칙 수준이 낮아 패턴과 맞지 않음"
+    },
+    {
+      "alertId": "ps-24",
+      "action": "record",
+      "confidence": 0.05,
+      "reason": "맞는 패턴 없음"
+    }
+  ],
+  "counts": {
+    "block": 8,
+    "alert": 8,
+    "record": 8
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "schema": "aleph.xdr.patterns.v1",
+  "moduleKey": "known-cve",
+  "technique": "T1190",
+  "reference": "https://attack.mitre.org/techniques/T1190/",
+  "cve": "CVE-2021-44228",
+  "cveReference": "https://nvd.nist.gov/vuln/detail/CVE-2021-44228",
+  "patterns": [
+    {
+      "id": "jndi-lookup-in-header",
+      "name": "요청 머리글 안의 원격 조회 구문(jndi 형태)",
+      "condition": "요청 머리글 칸(경보의 data.useragent)에 jndi 단어와 원격 조회 방식 이름(예: ldap)이 조회 표기 모양으로 이어져 있습니다. jndi 라는 단어나 CVE 번호만 글자로 있는 것, 중괄호만 있는 것, 잘려서 끝까지 이어지지 않은 것은 해당하지 않습니다. 같은 구문의 반복 횟수는 data.count, 어떤 형태인지는 rule.description 의 문장에서 읽습니다. 반복 횟수의 수치 기준은 decide 단계에서 정합니다.",
+      "basis": "NVD CVE-2021-44228: Apache Log4j2 2.0-beta9~2.15.0 에서 공격자가 기록되는 메시지나 인자를 조종할 수 있으면 JNDI 조회로 LDAP 같은 공격자 쪽 서버의 코드를 불러 실행할 수 있고, MITRE ATT&CK T1190 사례 표에도 이 CVE 가 적혀 있습니다(머리글이 기록 대상이라는 부분은 NVD 문장이 아니라 이번 프롬프트와 경보 설명에 따른 것입니다)."
+    },
+    {
+      "id": "jndi-lookup-in-url-param",
+      "name": "요청 주소 인자 안의 원격 조회 구문(jndi 형태)",
+      "condition": "요청 주소의 인자(경보의 data.url, 물음표 뒤 값)에 jndi 단어와 원격 조회 방식 이름이 조회 표기 모양으로 이어져 있습니다. 글자로 된 단어나 CVE 번호만 있는 검색어, 취약점 문서 주소, 잘린 조각은 해당하지 않습니다. 같은 주소에서의 반복 횟수는 data.count, 어떤 형태인지는 rule.description 의 문장에서 읽습니다. 반복 횟수의 수치 기준은 decide 단계에서 정합니다.",
+      "basis": "NVD CVE-2021-44228: 공격자가 로그 메시지의 인자를 조종할 수 있으면 원격 코드 실행으로 이어지고, MITRE ATT&CK T1190(외부 공개 앱 악용)은 공개된 웹 서비스의 약점으로 처음 들어오는 기법이며 사례 표(Magic Hound, APT41 등)에 Log4j 악용이 적혀 있습니다."
+    },
+    {
+      "id": "known-vuln-scanner-probe",
+      "name": "알려진 취약점 점검 도구의 흔적",
+      "condition": "공격 전에 취약한 서버를 찾는 점검 요청의 흔적입니다. 상태 확인 주소 등에 점검용 인자(예: probe)로 원격 조회 구문이 실려 오거나, rule.description 이 알려진 취약점 점검 흔적을 말합니다. 이 경보 묶음에는 점검 도구의 이름을 담은 칸이 없어서 rule.description 의 문장과 data.url 의 인자 이름으로만 읽습니다. 도구 이름만으로 판단하지 않습니다.",
+      "basis": "MITRE ATT&CK T1595.002 취약점 스캔: 공격자가 이용할 수 있는 약점이 있는지 미리 훑는 기법이고, 사례 표에 Log4j(CVE-2021-44228)에 취약한 서버를 찾아낸 사례(Aquatic Panda, Magic Hound)가 있습니다."
+    }
+  ],
+  "notIncluded": [
+    "jndi 라는 단어, CVE 번호, 취약점 이름이 글자로만 있는 요청(검색어·노트·문서 주소): 조회 구문이 없어 악용 형태의 근거가 되지 않아 패턴으로 넣지 않았습니다.",
+    "점검 도구 이름 목록: 이 경보 묶음의 칸으로는 도구 이름을 확인할 수 없고 근거 문서에서 목록을 확인하지 않아 넣지 않았습니다.",
+    "영향받는 Log4j 버전 확인: 요청 경보가 아니라 설치된 소프트웨어 목록에서 보는 신호라 이 경보 묶음의 칸으로는 확인할 수 없어 넣지 않았습니다."
+  ]
+}

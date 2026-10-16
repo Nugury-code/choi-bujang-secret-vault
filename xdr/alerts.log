@@ -67,3 +67,23 @@
 2026-10-16T02:44:42.625Z action=alert alert=pv-15 account=user06 srcip=203.0.113.55 confidence=0.6 rule=none reason=관리자 그룹 추가 패턴과 일부만 닮음
 2026-10-16T02:44:42.625Z action=alert alert=pv-16 account=user07 srcip=192.0.2.56 confidence=0.62 rule=none reason=처음 보는 관리자 명령 패턴과 일부만 닮음
 2026-10-16T02:44:42.625Z action=alert alert=pv-17 account=user08 srcip=198.51.100.56 confidence=0.58 rule=none reason=관리자 그룹 추가 패턴과 일부만 닮음
+2026-10-16T03:21:32.020Z action=block alert=ex-01 account=user01 srcip=192.0.2.20 dstip=203.0.113.50 confidence=0.92 expires=2026-10-16T03:51:32.020Z reason=처음 보는 목적지로 대용량 전송
+2026-10-16T03:21:32.020Z action=block alert=ex-02 account=user01 srcip=192.0.2.20 dstip=198.51.100.40 confidence=0.97 expires=2026-10-16T03:51:32.020Z reason=업무 시간 밖 압축 파일 반출 + 처음 보는 목적지로 대용량 전송
+2026-10-16T03:21:32.020Z action=block alert=ex-03 account=user02 srcip=198.51.100.20 dstip=203.0.113.50 confidence=0.88 expires=2026-10-16T03:51:32.020Z reason=명령 통로로 큰 파일 전송
+2026-10-16T03:21:32.020Z action=block alert=ex-04 account=user03 srcip=203.0.113.20 dstip=198.51.100.40 confidence=0.89 expires=2026-10-16T03:51:32.020Z reason=평소 쓰지 않던 포트 전송
+2026-10-16T03:21:32.020Z action=block alert=ex-05 account=user04 srcip=192.0.2.25 dstip=203.0.113.55 confidence=0.92 expires=2026-10-16T03:51:32.020Z reason=처음 보는 목적지로 대용량 전송
+2026-10-16T03:21:32.020Z action=block alert=ex-06 account=user05 srcip=198.51.100.25 dstip=192.0.2.90 confidence=0.94 expires=2026-10-16T03:51:32.020Z reason=명령 통로로 큰 파일 전송
+2026-10-16T03:21:32.020Z action=block alert=ex-07 account=user06 srcip=203.0.113.25 dstip=198.51.100.45 confidence=0.9 expires=2026-10-16T03:51:32.020Z reason=업무 시간 밖 압축 파일 반출 + 처음 보는 목적지로 대용량 전송
+2026-10-16T03:21:32.020Z action=block alert=ex-08 account=user07 srcip=192.0.2.26 dstip=203.0.113.60 confidence=0.95 expires=2026-10-16T03:51:32.020Z reason=처음 보는 목적지로 대용량 전송
+2026-10-16T03:21:32.020Z action=block alert=ex-09 account=user08 srcip=198.51.100.26 dstip=203.0.113.61 confidence=0.93 expires=2026-10-16T03:51:32.020Z reason=명령 통로로 큰 파일 전송 + 처음 보는 목적지로 대용량 전송
+2026-10-16T03:21:32.020Z action=block alert=ex-10 account=user01 srcip=203.0.113.26 dstip=198.51.100.46 confidence=0.9 expires=2026-10-16T03:51:32.020Z reason=처음 보는 목적지로 대용량 전송
+2026-10-16T03:21:32.020Z action=alert alert=ex-11 account=user01 srcip=192.0.2.57 dstip=192.0.2.80 confidence=0.64 rule=none reason=처음 보는 목적지로 대용량 전송 패턴과 일부만 닮음
+2026-10-16T03:21:32.020Z action=alert alert=ex-12 account=user02 srcip=198.51.100.57 dstip=198.51.100.80 confidence=0.66 rule=none reason=처음 보는 목적지로 대용량 전송 패턴과 일부만 닮음
+2026-10-16T03:21:32.020Z action=alert alert=ex-13 account=user03 srcip=203.0.113.57 dstip=- confidence=0.62 rule=none reason=업무 시간 밖 압축 파일 반출 패턴과 일부만 닮음
+2026-10-16T03:21:32.020Z action=alert alert=ex-14 account=user04 srcip=192.0.2.58 dstip=203.0.113.80 confidence=0.6 rule=none reason=처음 보는 목적지로 대용량 전송 패턴과 일부만 닮음
+2026-10-16T03:21:32.020Z action=alert alert=ex-15 account=user05 srcip=198.51.100.58 dstip=192.0.2.81 confidence=0.64 rule=none reason=처음 보는 목적지로 대용량 전송 패턴과 일부만 닮음
+2026-10-16T03:21:32.020Z action=alert alert=ex-16 account=user06 srcip=203.0.113.58 dstip=198.51.100.81 confidence=0.6 rule=none reason=처음 보는 목적지로 대용량 전송 패턴과 일부만 닮음
+2026-10-16T03:21:32.020Z action=alert alert=ex-17 account=user07 srcip=192.0.2.59 dstip=192.0.2.10 confidence=0.62 rule=none reason=처음 보는 목적지로 대용량 전송 패턴과 일부만 닮음
+2026-10-16T03:21:32.020Z action=alert alert=ex-18 account=user08 srcip=198.51.100.59 dstip=203.0.113.81 confidence=0.58 rule=none reason=처음 보는 목적지로 대용량 전송 패턴과 일부만 닮음
+2026-10-16T03:21:32.020Z action=alert alert=ex-19 account=user01 srcip=203.0.113.59 dstip=198.51.100.82 confidence=0.56 rule=none reason=명령 통로로 큰 파일 전송 패턴과 일부만 닮음
+2026-10-16T03:21:32.020Z action=alert alert=ex-20 account=user02 srcip=192.0.2.63 dstip=203.0.113.82 confidence=0.66 rule=none reason=업무 시간 밖 압축 파일 반출 패턴과 일부만 닮음

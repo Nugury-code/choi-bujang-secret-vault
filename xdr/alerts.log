@@ -50,3 +50,20 @@
 2026-10-16T01:11:33.752Z action=alert alert=ps-14 srcip=203.0.113.49 confidence=0.56 rule=none reason=시작 폴더 변경과 일부만 닮음
 2026-10-16T01:11:33.752Z action=alert alert=ps-15 srcip=192.0.2.53 confidence=0.58 rule=none reason=낯선 예약 작업과 일부만 닮음
 2026-10-16T01:11:33.752Z action=alert alert=ps-16 srcip=198.51.100.53 confidence=0.54 rule=none reason=서명 없는 새 서비스 등록과 일부만 닮음
+2026-10-16T02:44:42.625Z action=block alert=pv-01 account=user01 srcip=203.0.113.11 confidence=0.89 expires=2026-10-16T03:14:42.625Z reason=관리자 그룹 추가
+2026-10-16T02:44:42.625Z action=block alert=pv-02 account=user01 srcip=203.0.113.11 confidence=0.86 expires=2026-10-16T03:14:42.625Z reason=처음 보는 관리자 명령
+2026-10-16T02:44:42.625Z action=block alert=pv-03 account=user02 srcip=198.51.100.11 confidence=0.95 expires=2026-10-16T03:14:42.625Z reason=처음 보는 관리자 명령 + 업무 시간 밖 권한 사용
+2026-10-16T02:44:42.625Z action=block alert=pv-04 account=user03 srcip=192.0.2.11 confidence=0.92 expires=2026-10-16T03:14:42.625Z reason=관리자 그룹 추가 + 처음 보는 관리자 명령
+2026-10-16T02:44:42.625Z action=block alert=pv-05 account=user04 srcip=203.0.113.17 confidence=0.87 expires=2026-10-16T03:14:42.625Z reason=관리자 그룹 추가
+2026-10-16T02:44:42.625Z action=block alert=pv-06 account=user05 srcip=198.51.100.17 confidence=0.88 expires=2026-10-16T03:14:42.625Z reason=다른 계정 권한으로 관리자 실행
+2026-10-16T02:44:42.625Z action=block alert=pv-07 account=user06 srcip=192.0.2.17 confidence=0.91 expires=2026-10-16T03:14:42.625Z reason=관리자 그룹 추가 + 업무 시간 밖 권한 사용
+2026-10-16T02:44:42.625Z action=block alert=pv-08 account=user07 srcip=203.0.113.27 confidence=0.88 expires=2026-10-16T03:14:42.625Z reason=다른 계정 권한으로 관리자 실행
+2026-10-16T02:44:42.625Z action=block alert=pv-09 account=user08 srcip=198.51.100.27 confidence=0.87 expires=2026-10-16T03:14:42.625Z reason=관리자 그룹 추가
+2026-10-16T02:44:42.625Z action=alert alert=pv-10 account=user01 srcip=192.0.2.54 confidence=0.6 rule=none reason=처음 보는 관리자 명령 패턴과 일부만 닮음
+2026-10-16T02:44:42.625Z action=alert alert=pv-11 account=user02 srcip=198.51.100.54 confidence=0.66 rule=none reason=관리자 그룹 추가 패턴과 일부만 닮음
+2026-10-16T02:44:42.625Z action=alert alert=pv-12 account=user03 srcip=203.0.113.54 confidence=0.58 rule=none reason=처음 보는 관리자 명령 패턴과 일부만 닮음
+2026-10-16T02:44:42.625Z action=alert alert=pv-13 account=user04 srcip=192.0.2.55 confidence=0.56 rule=none reason=처음 보는 관리자 명령 패턴과 일부만 닮음
+2026-10-16T02:44:42.625Z action=alert alert=pv-14 account=user05 srcip=198.51.100.55 confidence=0.64 rule=none reason=처음 보는 관리자 명령 패턴과 일부만 닮음
+2026-10-16T02:44:42.625Z action=alert alert=pv-15 account=user06 srcip=203.0.113.55 confidence=0.6 rule=none reason=관리자 그룹 추가 패턴과 일부만 닮음
+2026-10-16T02:44:42.625Z action=alert alert=pv-16 account=user07 srcip=192.0.2.56 confidence=0.62 rule=none reason=처음 보는 관리자 명령 패턴과 일부만 닮음
+2026-10-16T02:44:42.625Z action=alert alert=pv-17 account=user08 srcip=198.51.100.56 confidence=0.58 rule=none reason=관리자 그룹 추가 패턴과 일부만 닮음

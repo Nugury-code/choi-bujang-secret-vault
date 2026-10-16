@@ -13,3 +13,4 @@ xdr/persistence/deny-rules.json
 policy/test-policy.json
 policy/test-policy.json.tmp
 policy/restore-audit.log
+xdr/privilege/deny-rules.json
